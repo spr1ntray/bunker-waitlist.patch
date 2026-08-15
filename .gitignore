@@ -11,6 +11,11 @@ __pycache__/
 *.softhub.zip.tmp
 *.tmp
 docs/
+**/ARCHITECTURE_RU.md
+**/PLUGIN_GUIDE_RU.md
+**/SOFTWARE_SPEC_RU.md
+**/SECURITY_RU.md
+**/USER_GUIDE_RU.md
 *.log
 tests/
 thebunkerhood.com.har
