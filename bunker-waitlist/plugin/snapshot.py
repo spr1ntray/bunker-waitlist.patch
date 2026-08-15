@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from plugin.client import ApiRejected, SafeRequestError, fetch_site
+from plugin.discover import discover_collection
 from plugin.identity import is_configured
 
 
@@ -48,8 +49,26 @@ def collect_monitor(*, proxy: str, timeout_seconds: int) -> AccountMonitor:
     except (SafeRequestError, ApiRejected):
         return unpublished_monitor(site_ok=False)
 
-    if not is_configured():
-        return unpublished_monitor(site_ok=site_ok)
+    if is_configured():
+        return AccountMonitor(
+            outcome="ok" if site_ok else "failed",
+            collection_status="live",
+            eligible=False,
+            mint_stage="unknown",
+            floor_eth="",
+            owned=0,
+            site_ok=site_ok,
+        )
 
-    # 1.2.0 will read OpenSea against locked identity. Until then stay unpublished.
-    return unpublished_monitor(site_ok=site_ok)
+    found = discover_collection(proxy=proxy, timeout_seconds=timeout_seconds)
+    if found is None:
+        return unpublished_monitor(site_ok=site_ok)
+    return AccountMonitor(
+        outcome="ok" if site_ok else "failed",
+        collection_status="live",
+        eligible=False,
+        mint_stage="unknown",
+        floor_eth="",
+        owned=0,
+        site_ok=site_ok,
+    )

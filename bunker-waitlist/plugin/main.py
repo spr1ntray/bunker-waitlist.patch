@@ -9,11 +9,14 @@ from soft_hub.sdk import CancelledError, HubAccount, HubContext
 
 from plugin.catalog import pick_comment, pick_handle, resolve_class
 from plugin.client import ApiRejected, SafeRequestError, normalize_wallet, submit_wallet
+from plugin.hunter import HuntTimeout
+from plugin.mint_flow import wait_for_allowlist, wait_for_signed_payload
 from plugin.proxy import proxy_to_url
 from plugin.snapshot import AccountMonitor, collect_monitor
 
 PRIMARY_KIND = "account_snapshot"
 MONITOR_KIND = "account_monitor"
+MINT_KIND = "account_mint"
 _REGISTER_KEYS = frozenset({"outcome", "class_name", "x_handle", "queued"})
 _MONITOR_KEYS = frozenset(
     {
@@ -25,6 +28,9 @@ _MONITOR_KEYS = frozenset(
         "owned",
         "site_ok",
     }
+)
+_MINT_KEYS = frozenset(
+    {"outcome", "stage", "minted", "listed", "token_id", "tx_hash"}
 )
 
 
@@ -62,6 +68,8 @@ def run(context: HubContext) -> dict[str, Any]:
         return _run_inspect(context)
     if context.action_id == "watch_collection":
         return _run_watch(context)
+    if context.action_id == "mint_and_list":
+        return _run_mint_and_list(context)
     raise ValueError("unsupported_action")
 
 
@@ -658,6 +666,264 @@ def _finish_monitor(
     )
 
 
+def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
+    timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
+    poll_seconds = _int_option(context.options, "poll_interval_seconds", 3, 2, 60)
+    watch_minutes = _int_option(context.options, "watch_minutes", 180, 5, 720)
+    list_mode = _str_option(context.options, "list_mode", "dump")
+    profit_percent = _int_option(context.options, "profit_percent", 20, 0, 500)
+    fixed_eth = str(context.options.get("list_price_eth", "0"))
+
+    counters = {
+        "total": len(context.accounts),
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "cancelled": 0,
+    }
+    ready: list[HubAccount] = []
+
+    context.log(
+        "Старт ожидания WL-минта BUNKER",
+        data={
+            "accounts": len(context.accounts),
+            "watch_minutes": watch_minutes,
+            "poll_interval_seconds": poll_seconds,
+            "list_mode": list_mode,
+        },
+    )
+
+    for account in context.accounts:
+        context.check_cancelled()
+        context.account_state(
+            account.id,
+            status="running",
+            stage="preflight",
+            progress=0.05,
+            message="Проверяем кошелёк и proxy",
+        )
+        try:
+            normalize_wallet(account.evm_address)
+            proxy_to_url(account.secret("proxy"))
+            account.secret("evm_private_key")
+        except (KeyError, ValueError):
+            _finish_mint(
+                context,
+                account,
+                status="blocked",
+                stage="preflight",
+                message="Нет приватника или proxy",
+                result_status="blocked",
+                data=_empty_mint("blocked", "preflight"),
+            )
+            counters["blocked"] += 1
+            continue
+        ready.append(account)
+
+    if not ready:
+        return counters
+
+    lead = ready[0]
+    deadline_s = watch_minutes * 60
+    try:
+        context.account_state(
+            lead.id,
+            status="running",
+            stage="inspect",
+            progress=0.15,
+            message="Ждём открытие allowlist. Минтить public не будем",
+        )
+        hunted = wait_for_allowlist(
+            proxy=lead.secret("proxy"),
+            timeout_seconds=timeout_seconds,
+            wallet=normalize_wallet(lead.evm_address),
+            deadline_s=deadline_s,
+            poll_s=poll_seconds,
+            check_cancelled=context.check_cancelled,
+        )
+    except HuntTimeout:
+        for account in ready:
+            _finish_mint(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message="Окно WL не открылось до конца ожидания",
+                result_status="failed",
+                data=_empty_mint("timeout", "wait"),
+            )
+            counters["failed"] += 1
+        return counters
+    except ValueError as err:
+        code = str(err)
+        message = _reject_message(code)
+        for account in ready:
+            _finish_mint(
+                context,
+                account,
+                status="blocked",
+                stage="blocked",
+                message=message,
+                result_status="blocked",
+                data=_empty_mint(code, "public" if code == "public_stage" else "ended"),
+            )
+            counters["blocked"] += 1
+        return counters
+    except CancelledError:
+        for account in ready:
+            context.account_state(
+                account.id,
+                status="cancelled",
+                stage="cancelled",
+                message="Ожидание минта остановлено",
+            )
+            counters["cancelled"] += 1
+        return counters
+
+    slug = str(hunted.get("slug") or "")
+    contract = str(hunted.get("contract") or "")
+    remain = max(30.0, float(deadline_s) / 3)
+
+    def worker(account: HubAccount) -> str:
+        return _mint_one(
+            context,
+            account,
+            slug=slug,
+            contract=contract,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            remain_s=remain,
+            list_mode=list_mode,
+            profit_percent=profit_percent,
+            fixed_eth=fixed_eth,
+        )
+
+    outcomes = context.map_accounts(worker, accounts=tuple(ready))
+    for status in outcomes:
+        counters[status] = counters.get(status, 0) + 1
+    return counters
+
+
+def _mint_one(
+    context: HubContext,
+    account: HubAccount,
+    *,
+    slug: str,
+    contract: str,
+    timeout_seconds: int,
+    poll_seconds: int,
+    remain_s: float,
+    list_mode: str,
+    profit_percent: int,
+    fixed_eth: str,
+) -> str:
+    context.check_cancelled()
+    context.account_state(
+        account.id,
+        status="running",
+        stage="automation",
+        progress=0.40,
+        message="Ждём подпись OpenSea на этот кошелёк",
+    )
+    try:
+        signed = wait_for_signed_payload(
+            slug=slug,
+            contract=contract,
+            wallet=normalize_wallet(account.evm_address),
+            proxy=account.secret("proxy"),
+            timeout_seconds=timeout_seconds,
+            deadline_s=remain_s,
+            poll_s=poll_seconds,
+            check_cancelled=context.check_cancelled,
+        )
+        if signed is None:
+            _finish_mint(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message="Подпись WL от OpenSea не пришла — минтить public не будем",
+                result_status="failed",
+                data=_empty_mint("no_signature", "allowlist"),
+            )
+            return "failed"
+
+        context.check_cancelled()
+        context.account_state(
+            account.id,
+            status="running",
+            stage="submitting",
+            progress=0.70,
+            message="Минтим по WL и ставим ордер",
+        )
+        # Payload shape is filled from a live HAR. Do not send a blind public mint.
+        _finish_mint(
+            context,
+            account,
+            status="failed",
+            stage="failed",
+            message="Контракт найден, но формат mintSigned ещё не закреплён. Нужен HAR",
+            result_status="failed",
+            data=_empty_mint("mint_payload_unknown", "allowlist"),
+        )
+        return "failed"
+    except CancelledError:
+        context.account_state(
+            account.id,
+            status="cancelled",
+            stage="cancelled",
+            message="Минт остановлен. Проверьте explorer перед повтором",
+        )
+        return "cancelled"
+    except Exception:
+        _finish_mint(
+            context,
+            account,
+            status="failed",
+            stage="failed",
+            message="Минт не выполнен. Перед повтором проверьте explorer",
+            result_status="failed",
+            data=_empty_mint("failed", "failed"),
+        )
+        return "failed"
+
+
+def _empty_mint(outcome: str, stage: str) -> dict[str, Any]:
+    return {
+        "outcome": outcome,
+        "stage": stage,
+        "minted": False,
+        "listed": False,
+        "token_id": "",
+        "tx_hash": "",
+    }
+
+
+def _finish_mint(
+    context: HubContext,
+    account: HubAccount,
+    *,
+    status: str,
+    stage: str,
+    message: str,
+    result_status: str,
+    data: dict[str, Any],
+    progress: float | None = None,
+) -> None:
+    _finish(
+        context,
+        account,
+        status=status,
+        stage=stage,
+        message=message,
+        result_status=result_status,
+        data=data,
+        progress=progress,
+        keys=_MINT_KEYS,
+        kind=MINT_KIND,
+    )
+
+
 def _reject_message(code: str) -> str:
     mapping = {
         "already_registered": "Кошелёк или X уже в waitlist",
@@ -673,6 +939,12 @@ def _reject_message(code: str) -> str:
         "timeout": "Истёк таймаут",
         "proxy_error": "Proxy не отвечает",
         "request_failed": "Сеть не ответила",
+        "public_stage": "Открыт public. WL-минт не отправляем",
+        "stage_ended": "Окно минта уже закрыто",
+        "hunt_timeout": "Окно WL не открылось до конца ожидания",
+        "no_signature": "Нет подписи OpenSea на этот кошелёк",
+        "mint_payload_unknown": "Формат минта ещё не закреплён",
+        "wrong_chain": "RPC вернул не Robinhood Chain",
     }
     return mapping.get(code, "Заявка не принята")
 

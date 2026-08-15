@@ -4,12 +4,12 @@
   "contract_version": "SH-SOFTWARE-0.6/4",
   "id": "io.sprintray.bunker-waitlist",
   "name": "BUNKER",
-  "version": "1.1.3",
-  "description": "Waitlist BUNKER и проверка eligible. На каждый кошелёк — свой proxy.",
+  "version": "1.2.0",
+  "description": "Waitlist BUNKER и ожидание WL-минта. Один кошелёк — один proxy.",
   "author": "sprintray",
   "presentation": {
     "display_name": "BUNKER",
-    "description": "Записывает кошельки в waitlist и проверяет eligible. Один кошелёк — один proxy.",
+    "description": "Пишет waitlist и сам ждёт WL-минт. Public не трогает. Один кошелёк — один proxy.",
     "assets": {
       "icon": "assets/icon.png",
       "image": "assets/image.png"
@@ -33,10 +33,15 @@
     "heartbeat_seconds": 15
   },
   "permissions": {
-    "secrets": ["proxy"],
-    "network": ["thebunkerhood.com"],
-    "chains": [],
-    "financial_risk": "none",
+    "secrets": ["evm_private_key", "proxy"],
+    "network": [
+      "thebunkerhood.com",
+      "api.opensea.io",
+      "opensea.io",
+      "rpc.mainnet.chain.robinhood.com"
+    ],
+    "chains": [4663],
+    "financial_risk": "mainnet",
     "browser": false,
     "local_services": []
   },
@@ -425,6 +430,166 @@
             "x-ui": {
               "group": "Сеть",
               "order": 30,
+              "unit": "сек",
+              "advanced": true
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "mint_and_list",
+      "name": "Ждать WL и минтить",
+      "description": "Сам ждёт allowlist на Robinhood, минтит только WL и сразу ставит ордер. Public не минтит.",
+      "risk": "mainnet_write",
+      "account_mode": "one_or_more",
+      "confirmation_phrase": "BUNKER MINT AND LIST",
+      "permissions": {
+        "secrets": ["evm_private_key", "proxy"]
+      },
+      "resources": {
+        "account": ["private_key", "proxy"],
+        "settings": []
+      },
+      "output": {
+        "mode": "account_table",
+        "title": "WL-минт BUNKER",
+        "primary_kind": "account_mint",
+        "columns": [
+          {
+            "key": "outcome",
+            "title": "Итог",
+            "type": "string"
+          },
+          {
+            "key": "stage",
+            "title": "Стадия",
+            "type": "string"
+          },
+          {
+            "key": "minted",
+            "title": "Сминтил",
+            "type": "boolean"
+          },
+          {
+            "key": "listed",
+            "title": "В стакане",
+            "type": "boolean"
+          },
+          {
+            "key": "token_id",
+            "title": "Token",
+            "type": "string"
+          },
+          {
+            "key": "tx_hash",
+            "title": "Tx",
+            "type": "string"
+          }
+        ]
+      },
+      "options": {
+        "type": "object",
+        "properties": {
+          "account_concurrency": {
+            "type": "integer",
+            "title": "Параллельные аккаунты",
+            "description": "Сколько кошельков минтить сразу, когда WL откроется.",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 20,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Выполнение",
+              "order": 0,
+              "unit": "аккаунтов"
+            }
+          },
+          "watch_minutes": {
+            "type": "integer",
+            "title": "Ждать WL",
+            "description": "Сколько минут софт сам ждёт открытие allowlist. Можно остановить раньше.",
+            "default": 180,
+            "minimum": 5,
+            "maximum": 720,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Ожидание",
+              "order": 10,
+              "unit": "мин"
+            }
+          },
+          "poll_interval_seconds": {
+            "type": "integer",
+            "title": "Интервал опроса",
+            "description": "Как часто проверять, открылся ли WL. Безопасное значение — 3 секунды.",
+            "default": 3,
+            "minimum": 2,
+            "maximum": 60,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Ожидание",
+              "order": 20,
+              "unit": "сек"
+            }
+          },
+          "list_mode": {
+            "type": "string",
+            "title": "Стакан",
+            "description": "Как поставить ордер после минта. Демп — чуть ниже текущего floor.",
+            "enum": ["dump", "fixed", "percent"],
+            "default": "dump",
+            "x-ui": {
+              "group": "Стакан",
+              "order": 30,
+              "enum_labels": {
+                "dump": "Демп — первые в стакане",
+                "fixed": "Фикс в ETH",
+                "percent": "Процент от цены минта"
+              }
+            }
+          },
+          "list_price_eth": {
+            "type": "string",
+            "title": "Фикс цена",
+            "description": "Цена в ETH для режима «фикс». Для демпа не используется.",
+            "default": "0.01",
+            "maxLength": 24,
+            "x-ui": {
+              "group": "Цена",
+              "order": 40,
+              "advanced": true,
+              "placeholder": "0.01"
+            }
+          },
+          "profit_percent": {
+            "type": "integer",
+            "title": "Процент",
+            "description": "Надбавка к цене минта для режима «процент».",
+            "default": 20,
+            "minimum": 0,
+            "maximum": 500,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Цена",
+              "order": 50,
+              "unit": "%",
+              "advanced": true
+            }
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "title": "Таймаут запроса",
+            "description": "Сетевой таймаут proxy, RPC и OpenSea. Безопасное значение — 30.",
+            "default": 30,
+            "minimum": 5,
+            "maximum": 120,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Сеть",
+              "order": 60,
               "unit": "сек",
               "advanced": true
             }
