@@ -1,0 +1,761 @@
+from __future__ import annotations
+
+import random
+import threading
+import time
+from typing import Any
+
+from soft_hub.sdk import CancelledError, HubAccount, HubContext
+
+from plugin.catalog import pick_comment, pick_handle, resolve_class
+from plugin.client import ApiRejected, SafeRequestError, normalize_wallet, submit_wallet
+from plugin.proxy import proxy_to_url
+from plugin.snapshot import AccountMonitor, collect_monitor
+
+PRIMARY_KIND = "account_snapshot"
+MONITOR_KIND = "account_monitor"
+_REGISTER_KEYS = frozenset({"outcome", "class_name", "x_handle", "queued"})
+_MONITOR_KEYS = frozenset(
+    {
+        "outcome",
+        "collection_status",
+        "eligible",
+        "mint_stage",
+        "floor_eth",
+        "owned",
+        "site_ok",
+    }
+)
+
+
+class _RandomAccountPause:
+    """Per-account random delay from [min_ms, max_ms], plus optional start stagger."""
+
+    def __init__(self, min_ms: int, max_ms: int) -> None:
+        lo = max(0, int(min_ms))
+        hi = max(0, int(max_ms))
+        if hi < lo:
+            lo, hi = hi, lo
+        self._lo = lo
+        self._hi = hi
+        self._lock = threading.Lock()
+        self._next_at = 0.0
+
+    def wait(self, context: HubContext) -> int:
+        if self._hi <= 0 and self._lo <= 0:
+            return 0
+        chosen = random.randint(self._lo, self._hi)
+        with self._lock:
+            now = time.monotonic()
+            start_at = max(now, self._next_at)
+            self._next_at = start_at + (chosen / 1000.0)
+        delay = start_at - time.monotonic()
+        if delay > 0:
+            _interruptible_sleep(context, delay)
+        return chosen
+
+
+def run(context: HubContext) -> dict[str, Any]:
+    if context.action_id == "register_waitlist":
+        return _run_register(context)
+    if context.action_id == "inspect":
+        return _run_inspect(context)
+    if context.action_id == "watch_collection":
+        return _run_watch(context)
+    raise ValueError("unsupported_action")
+
+
+def _run_register(context: HubContext) -> dict[str, Any]:
+    timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
+    class_choice = _str_option(context.options, "class_choice", "random")
+    account_lo, account_hi = _ms_range(
+        context.options,
+        "account_pause_min_ms",
+        "account_pause_max_ms",
+        default_lo=800,
+        default_hi=2000,
+        high=30000,
+    )
+    account_pause = _RandomAccountPause(account_lo, account_hi)
+    used_handles: set[str] = set()
+    used_posts: set[str] = set()
+    handle_lock = threading.Lock()
+    counters = {
+        "total": len(context.accounts),
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "cancelled": 0,
+    }
+    lock = threading.Lock()
+
+    context.log(
+        "Старт регистрации BUNKER waitlist",
+        data={
+            "accounts": len(context.accounts),
+            "account_concurrency": int(getattr(context, "account_concurrency", 1) or 1),
+            "account_pause_ms": [account_lo, account_hi],
+            "timeout_seconds": timeout_seconds,
+            "class_choice": class_choice,
+        },
+    )
+
+    def worker(account: HubAccount) -> str:
+        status = _process_register(
+            context,
+            account,
+            timeout_seconds=timeout_seconds,
+            class_choice=class_choice,
+            account_pause=account_pause,
+            used_handles=used_handles,
+            used_posts=used_posts,
+            handle_lock=handle_lock,
+        )
+        with lock:
+            counters[status] = counters.get(status, 0) + 1
+        return status
+
+    context.map_accounts(worker)
+    return {
+        "total": counters["total"],
+        "succeeded": counters.get("succeeded", 0),
+        "failed": counters.get("failed", 0),
+        "blocked": counters.get("blocked", 0),
+        "cancelled": counters.get("cancelled", 0),
+    }
+
+
+def _run_inspect(context: HubContext) -> dict[str, Any]:
+    timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
+    account_lo, account_hi = _ms_range(
+        context.options,
+        "account_pause_min_ms",
+        "account_pause_max_ms",
+        default_lo=200,
+        default_hi=800,
+        high=30000,
+    )
+    account_pause = _RandomAccountPause(account_lo, account_hi)
+    counters = {
+        "total": len(context.accounts),
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "cancelled": 0,
+    }
+    lock = threading.Lock()
+
+    context.log(
+        "Старт проверки аккаунтов BUNKER",
+        data={
+            "accounts": len(context.accounts),
+            "account_concurrency": int(getattr(context, "account_concurrency", 1) or 1),
+            "account_pause_ms": [account_lo, account_hi],
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+
+    def worker(account: HubAccount) -> str:
+        status = _process_inspect(
+            context,
+            account,
+            timeout_seconds=timeout_seconds,
+            account_pause=account_pause,
+        )
+        with lock:
+            counters[status] = counters.get(status, 0) + 1
+        return status
+
+    context.map_accounts(worker)
+    return {
+        "total": counters["total"],
+        "succeeded": counters.get("succeeded", 0),
+        "failed": counters.get("failed", 0),
+        "blocked": counters.get("blocked", 0),
+        "cancelled": counters.get("cancelled", 0),
+    }
+
+
+def _process_register(
+    context: HubContext,
+    account: HubAccount,
+    *,
+    timeout_seconds: int,
+    class_choice: str,
+    account_pause: _RandomAccountPause,
+    used_handles: set[str],
+    used_posts: set[str],
+    handle_lock: threading.Lock,
+) -> str:
+    context.check_cancelled()
+    account_pause.wait(context)
+    context.check_cancelled()
+    context.account_state(
+        account.id,
+        status="running",
+        stage="preflight",
+        progress=0.05,
+        message="Проверяем кошелёк и proxy",
+    )
+
+    write_sent = False
+    try:
+        try:
+            wallet = normalize_wallet(account.evm_address)
+            proxy = account.secret("proxy")
+            proxy_to_url(proxy)
+            bunker_class = resolve_class(class_choice, wallet)
+            with handle_lock:
+                handle = pick_handle(wallet, used_handles)
+                comment = pick_comment(wallet, used_posts)
+        except (KeyError, ValueError):
+            _finish(
+                context,
+                account,
+                status="blocked",
+                stage="preflight",
+                message="Нет адреса или proxy, либо они неверные",
+                result_status="blocked",
+                data={
+                    "outcome": "blocked",
+                    "class_name": "",
+                    "x_handle": "",
+                    "queued": False,
+                },
+            )
+            return "blocked"
+
+        context.log(
+            "Досье собрано без внешних подписок",
+            account_id=account.id,
+            data={"class_code": bunker_class.code, "quests": 5},
+        )
+        context.check_cancelled()
+        context.account_state(
+            account.id,
+            status="running",
+            stage="automation",
+            progress=0.30,
+            message="Закрываем квесты и держим позицию",
+        )
+
+        context.check_cancelled()
+        context.account_state(
+            account.id,
+            status="running",
+            stage="submitting",
+            progress=0.55,
+            message="Отправляем кошелёк в waitlist",
+        )
+
+        write_sent = True
+        try:
+            result = submit_wallet(
+                wallet=wallet,
+                proxy=proxy,
+                timeout_seconds=timeout_seconds,
+                x_username=handle,
+                bunker_class=bunker_class,
+                comment=comment,
+            )
+        except SafeRequestError:
+            write_sent = False
+            _finish(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message="Не удалось отправить заявку",
+                result_status="failed",
+                data={
+                    "outcome": "failed",
+                    "class_name": bunker_class.name,
+                    "x_handle": handle,
+                    "queued": False,
+                },
+            )
+            return "failed"
+        except ApiRejected as err:
+            write_sent = False
+            _finish(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message=_reject_message(err.code),
+                result_status="failed",
+                data={
+                    "outcome": "failed",
+                    "class_name": bunker_class.name,
+                    "x_handle": handle,
+                    "queued": False,
+                },
+            )
+            return "failed"
+        write_sent = False
+
+        already = bool(result.already_existed)
+        outcome = "already_on_waitlist" if already else "registered"
+        message = "Уже в waitlist" if already else "Кошелёк записан в waitlist"
+        context.log(
+            message,
+            account_id=account.id,
+            data={"outcome": outcome, "queued": result.queued},
+        )
+        context.account_state(
+            account.id,
+            status="running",
+            stage="confirming",
+            progress=0.90,
+            message=message,
+        )
+        _finish(
+            context,
+            account,
+            status="succeeded",
+            stage="completed",
+            message=message,
+            result_status="succeeded",
+            data={
+                "outcome": outcome,
+                "class_name": bunker_class.name,
+                "x_handle": handle,
+                "queued": bool(result.queued) and not already,
+            },
+            progress=1.0,
+        )
+        return "succeeded"
+
+    except CancelledError:
+        context.account_state(
+            account.id,
+            status="cancelled",
+            stage="cancelled",
+            message=(
+                "Остановка во время отправки — перед повтором проверьте waitlist"
+                if write_sent
+                else "Остановлено до отправки"
+            ),
+        )
+        return "cancelled"
+    except Exception:
+        if write_sent:
+            _finish(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message="Сбой после отправки — перед повтором проверьте waitlist",
+                result_status="failed",
+                data={
+                    "outcome": "failed",
+                    "class_name": "",
+                    "x_handle": "",
+                    "queued": False,
+                },
+            )
+            return "failed"
+        _finish(
+            context,
+            account,
+            status="failed",
+            stage="failed",
+            message="Не удалось отправить заявку",
+            result_status="failed",
+            data={
+                "outcome": "failed",
+                "class_name": "",
+                "x_handle": "",
+                "queued": False,
+            },
+        )
+        return "failed"
+
+
+def _process_inspect(
+    context: HubContext,
+    account: HubAccount,
+    *,
+    timeout_seconds: int,
+    account_pause: _RandomAccountPause,
+) -> str:
+    context.check_cancelled()
+    account_pause.wait(context)
+    context.check_cancelled()
+    context.account_state(
+        account.id,
+        status="running",
+        stage="preflight",
+        progress=0.05,
+        message="Проверяем proxy",
+    )
+
+    try:
+        try:
+            proxy = account.secret("proxy")
+            proxy_to_url(proxy)
+        except (KeyError, ValueError):
+            _finish_monitor(
+                context,
+                account,
+                status="blocked",
+                stage="preflight",
+                message="Нет proxy либо он неверный",
+                result_status="blocked",
+                snapshot=_blocked_monitor(),
+            )
+            return "blocked"
+
+        context.check_cancelled()
+        context.account_state(
+            account.id,
+            status="running",
+            stage="inspect",
+            progress=0.35,
+            message="Читаем сайт и статус коллекции",
+        )
+        snapshot = collect_monitor(proxy=proxy, timeout_seconds=timeout_seconds)
+        context.account_state(
+            account.id,
+            status="running",
+            stage="response_validated",
+            progress=0.90,
+            message=_monitor_message(snapshot),
+        )
+        if snapshot.outcome == "failed":
+            _finish_monitor(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message=_monitor_message(snapshot),
+                result_status="failed",
+                snapshot=snapshot,
+            )
+            return "failed"
+        _finish_monitor(
+            context,
+            account,
+            status="succeeded",
+            stage="completed",
+            message=_monitor_message(snapshot),
+            result_status="succeeded",
+            snapshot=snapshot,
+            progress=1.0,
+        )
+        return "succeeded"
+
+    except CancelledError:
+        context.account_state(
+            account.id,
+            status="cancelled",
+            stage="cancelled",
+            message="Проверка остановлена",
+        )
+        return "cancelled"
+    except Exception:
+        _finish_monitor(
+            context,
+            account,
+            status="failed",
+            stage="failed",
+            message="Не удалось проверить аккаунт",
+            result_status="failed",
+            snapshot=_failed_monitor(),
+        )
+        return "failed"
+
+
+def _run_watch(context: HubContext) -> dict[str, Any]:
+    timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
+    poll_seconds = _int_option(context.options, "poll_interval_seconds", 30, 15, 300)
+    watch_minutes = _int_option(context.options, "watch_minutes", 60, 5, 180)
+
+    counters = {
+        "total": len(context.accounts),
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "cancelled": 0,
+    }
+
+    context.log(
+        "Старт слежения за коллекцией BUNKER",
+        data={
+            "accounts": len(context.accounts),
+            "account_concurrency": int(getattr(context, "account_concurrency", 1) or 1),
+            "poll_interval_seconds": poll_seconds,
+            "watch_minutes": watch_minutes,
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+
+    ready: list[HubAccount] = []
+    for account in context.accounts:
+        context.check_cancelled()
+        context.account_state(
+            account.id,
+            status="running",
+            stage="preflight",
+            progress=0.05,
+            message="Проверяем proxy",
+        )
+        try:
+            proxy_to_url(account.secret("proxy"))
+        except (KeyError, ValueError):
+            _finish_monitor(
+                context,
+                account,
+                status="blocked",
+                stage="preflight",
+                message="Нет proxy либо он неверный",
+                result_status="blocked",
+                snapshot=_blocked_monitor(),
+            )
+            counters["blocked"] += 1
+            continue
+        ready.append(account)
+
+    if not ready:
+        return counters
+
+    last: dict[str, AccountMonitor] = {}
+    deadline = time.monotonic() + watch_minutes * 60
+    tick = 0
+
+    try:
+        while True:
+            context.check_cancelled()
+            tick += 1
+
+            def _tick(account: HubAccount) -> AccountMonitor:
+                context.check_cancelled()
+                proxy = account.secret("proxy")
+                return collect_monitor(proxy=proxy, timeout_seconds=timeout_seconds)
+
+            snapshots = context.map_accounts(_tick, accounts=tuple(ready))
+            for account, snapshot in zip(ready, snapshots, strict=True):
+                last[account.id] = snapshot
+                context.account_state(
+                    account.id,
+                    status="running",
+                    stage="inspect",
+                    progress=0.20,
+                    message=_monitor_message(snapshot),
+                )
+            context.emit(
+                "heartbeat",
+                message="Слежение активно",
+                data={"tick": tick, "accounts": len(ready)},
+            )
+            if time.monotonic() >= deadline:
+                break
+            remaining = deadline - time.monotonic()
+            _interruptible_sleep(context, min(float(poll_seconds), remaining))
+            if time.monotonic() >= deadline:
+                break
+    except CancelledError:
+        for account in ready:
+            context.account_state(
+                account.id,
+                status="cancelled",
+                stage="cancelled",
+                message="Слежение остановлено",
+            )
+            counters["cancelled"] += 1
+        counters["total"] = (
+            counters["succeeded"]
+            + counters["failed"]
+            + counters["blocked"]
+            + counters["cancelled"]
+        )
+        return counters
+
+    for account in ready:
+        snapshot = last.get(account.id) or _failed_monitor()
+        if snapshot.outcome == "failed":
+            _finish_monitor(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message=_monitor_message(snapshot),
+                result_status="failed",
+                snapshot=snapshot,
+            )
+            counters["failed"] += 1
+            continue
+        _finish_monitor(
+            context,
+            account,
+            status="succeeded",
+            stage="completed",
+            message=_monitor_message(snapshot),
+            result_status="succeeded",
+            snapshot=snapshot,
+            progress=1.0,
+        )
+        counters["succeeded"] += 1
+    return counters
+
+
+def _blocked_monitor() -> AccountMonitor:
+    return AccountMonitor(
+        outcome="blocked",
+        collection_status="unpublished",
+        eligible=False,
+        mint_stage="unpublished",
+        floor_eth="",
+        owned=0,
+        site_ok=False,
+    )
+
+
+def _failed_monitor() -> AccountMonitor:
+    return AccountMonitor(
+        outcome="failed",
+        collection_status="unpublished",
+        eligible=False,
+        mint_stage="unpublished",
+        floor_eth="",
+        owned=0,
+        site_ok=False,
+    )
+
+
+def _monitor_message(snapshot: AccountMonitor) -> str:
+    if snapshot.outcome == "failed":
+        return "Не удалось прочитать сайт через proxy"
+    if snapshot.collection_status == "unpublished":
+        return "Коллекция ещё не закреплена"
+    if snapshot.eligible:
+        return "Аккаунт допущен"
+    return "Аккаунт не допущен"
+
+
+def _finish_monitor(
+    context: HubContext,
+    account: HubAccount,
+    *,
+    status: str,
+    stage: str,
+    message: str,
+    result_status: str,
+    snapshot: AccountMonitor,
+    progress: float | None = None,
+) -> None:
+    _finish(
+        context,
+        account,
+        status=status,
+        stage=stage,
+        message=message,
+        result_status=result_status,
+        data=dict(snapshot.as_data()),
+        progress=progress,
+        keys=_MONITOR_KEYS,
+        kind=MONITOR_KIND,
+    )
+
+
+def _reject_message(code: str) -> str:
+    mapping = {
+        "already_registered": "Кошелёк или X уже в waitlist",
+        "rate_limited": "Слишком много заявок с этого proxy — подождите и уменьшите потоки",
+        "bad_request": "Сервис отклонил заявку",
+        "invalid_submission": "Сервис не принял состав заявки",
+        "forbidden": "Сервис запретил заявку",
+        "server_error": "Сервис временно недоступен",
+        "invalid_wallet": "Адрес кошелька не принят",
+        "sheets_blocked": "Очередь проекта недоступна",
+        "unexpected_page": "Страница входа выглядит иначе, чем ожидалось",
+        "unexpected_http_status": "Сервис вернул неожиданный ответ",
+        "timeout": "Истёк таймаут",
+        "proxy_error": "Proxy не отвечает",
+        "request_failed": "Сеть не ответила",
+    }
+    return mapping.get(code, "Заявка не принята")
+
+
+def _finish(
+    context: HubContext,
+    account: HubAccount,
+    *,
+    status: str,
+    stage: str,
+    message: str,
+    result_status: str,
+    data: dict[str, Any],
+    progress: float | None = None,
+    keys: frozenset[str] = _REGISTER_KEYS,
+    kind: str = PRIMARY_KIND,
+) -> None:
+    safe_data = {k: data[k] for k in keys if k in data}
+    context.result(
+        f"{account.label}: {message}",
+        kind=kind,
+        status=result_status,
+        account_id=account.id,
+        data=safe_data,
+    )
+    kwargs: dict[str, Any] = {
+        "status": status,
+        "stage": stage,
+        "message": message,
+    }
+    if progress is not None:
+        kwargs["progress"] = progress
+    context.account_state(account.id, **kwargs)
+
+
+def _int_option(
+    options: dict[str, Any],
+    name: str,
+    default: int,
+    low: int,
+    high: int,
+) -> int:
+    value = options.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"invalid_{name}")
+    if not low <= value <= high:
+        raise ValueError(f"invalid_{name}")
+    return value
+
+
+def _str_option(options: dict[str, Any], name: str, default: str) -> str:
+    value = options.get(name, default)
+    if not isinstance(value, str):
+        raise ValueError(f"invalid_{name}")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"invalid_{name}")
+    return value
+
+
+def _ms_range(
+    options: dict[str, Any],
+    lo_name: str,
+    hi_name: str,
+    *,
+    default_lo: int,
+    default_hi: int,
+    high: int,
+) -> tuple[int, int]:
+    lo = _int_option(options, lo_name, default_lo, 0, high)
+    hi = _int_option(options, hi_name, default_hi, 0, high)
+    if hi < lo:
+        lo, hi = hi, lo
+    return lo, hi
+
+
+def _interruptible_sleep(context: HubContext, seconds: float) -> None:
+    if seconds <= 0:
+        return
+    end = time.monotonic() + seconds
+    while True:
+        context.check_cancelled()
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.2, remaining))

@@ -1,0 +1,16 @@
+__pycache__/
+.DS_Store
+.env
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.har
+*.mov
+*.pyc
+*.softhub.zip.tmp
+*.tmp
+docs/
+*.log
+tests/
+thebunkerhood.com.har

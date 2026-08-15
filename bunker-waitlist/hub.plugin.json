@@ -1,0 +1,442 @@
+{
+  "$schema": "https://soft-hub.local/schemas/plugin-v1.json",
+  "schema_version": 1,
+  "contract_version": "SH-SOFTWARE-0.6/4",
+  "id": "io.sprintray.bunker-waitlist",
+  "name": "BUNKER",
+  "version": "1.1.2",
+  "description": "Waitlist BUNKER и проверка eligible. На каждый кошелёк — свой proxy.",
+  "author": "sprintray",
+  "presentation": {
+    "display_name": "BUNKER",
+    "description": "Записывает кошельки в waitlist и проверяет eligible. Один кошелёк — один proxy.",
+    "assets": {
+      "icon": "assets/icon.png",
+      "image": "assets/image.png"
+    }
+  },
+  "catalog": {
+    "sections": ["nft"]
+  },
+  "compatibility": {
+    "hub": ">=0.6.15",
+    "python": ">=3.12,<3.13",
+    "os": ["darwin"]
+  },
+  "runtime": {
+    "type": "python",
+    "entrypoint": "plugin.main:run",
+    "protocol": "soft-hub-jsonl/1",
+    "state_model": "externally_reconciled",
+    "requirements": "requirements.txt",
+    "safe_stop": true,
+    "heartbeat_seconds": 15
+  },
+  "permissions": {
+    "secrets": ["proxy"],
+    "network": ["thebunkerhood.com"],
+    "chains": [],
+    "financial_risk": "none",
+    "browser": false,
+    "local_services": []
+  },
+  "actions": [
+    {
+      "id": "register_waitlist",
+      "name": "Записать в waitlist",
+      "description": "Закрывает квесты и отправляет кошелёк, класс и X-хэндл в waitlist BUNKER.",
+      "risk": "external_write",
+      "account_mode": "one_or_more",
+      "permissions": {
+        "secrets": ["proxy"]
+      },
+      "resources": {
+        "account": ["proxy"],
+        "settings": []
+      },
+      "output": {
+        "mode": "account_table",
+        "title": "Регистрация BUNKER",
+        "primary_kind": "account_snapshot",
+        "columns": [
+          {
+            "key": "outcome",
+            "title": "Итог",
+            "type": "string"
+          },
+          {
+            "key": "class_name",
+            "title": "Класс",
+            "type": "string"
+          },
+          {
+            "key": "x_handle",
+            "title": "X",
+            "type": "string"
+          },
+          {
+            "key": "queued",
+            "title": "В очереди",
+            "type": "boolean"
+          }
+        ]
+      },
+      "options": {
+        "type": "object",
+        "properties": {
+          "account_concurrency": {
+            "type": "integer",
+            "title": "Параллельные аккаунты",
+            "description": "Сколько профилей софт обрабатывает одновременно. Один кошелёк всегда идёт через свой proxy.",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 20,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Выполнение",
+              "order": 0,
+              "unit": "аккаунтов"
+            }
+          },
+          "class_choice": {
+            "type": "string",
+            "title": "Класс бункера",
+            "description": "Какой класс записать. «Случайно» выбирает класс по адресу кошелька: один адрес всегда получает тот же класс.",
+            "enum": [
+              "random",
+              "worker",
+              "farmer",
+              "mechanic",
+              "it",
+              "administration"
+            ],
+            "default": "random",
+            "x-ui": {
+              "group": "Класс",
+              "order": 10,
+              "enum_labels": {
+                "random": "Случайно по кошелькам",
+                "worker": "WORKER — производство",
+                "farmer": "FARMER — ресурсы",
+                "mechanic": "MECHANIC — ремонт",
+                "it": "IT — системы",
+                "administration": "ADMINISTRATION — координация"
+              }
+            }
+          },
+          "account_pause_min_ms": {
+            "type": "integer",
+            "title": "Пауза аккаунта",
+            "description": "Случайная пауза перед каждым кошельком. Нижняя и верхняя границы задают диапазон.",
+            "default": 800,
+            "minimum": 0,
+            "maximum": 30000,
+            "multipleOf": 50,
+            "x-ui": {
+              "group": "Темп",
+              "order": 20,
+              "unit": "мс",
+              "control": "dual_range",
+              "range": {
+                "id": "account_pause",
+                "role": "from"
+              }
+            }
+          },
+          "account_pause_max_ms": {
+            "type": "integer",
+            "title": "Пауза аккаунта",
+            "description": "Случайная пауза перед каждым кошельком. Нижняя и верхняя границы задают диапазон.",
+            "default": 2000,
+            "minimum": 0,
+            "maximum": 30000,
+            "multipleOf": 50,
+            "x-ui": {
+              "group": "Темп",
+              "order": 30,
+              "unit": "мс",
+              "control": "dual_range",
+              "range": {
+                "id": "account_pause",
+                "role": "to"
+              }
+            }
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "title": "Таймаут запроса",
+            "description": "Фиксированный сетевой таймаут proxy и API BUNKER. Безопасное значение — 30.",
+            "default": 30,
+            "minimum": 5,
+            "maximum": 120,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Сеть",
+              "order": 40,
+              "unit": "сек",
+              "advanced": true
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "inspect",
+      "name": "Проверить аккаунты",
+      "description": "Читает сайт BUNKER и статус коллекции через proxy. Ничего не записывает и не минтит.",
+      "risk": "read",
+      "account_mode": "one_or_more",
+      "permissions": {
+        "secrets": ["proxy"]
+      },
+      "resources": {
+        "account": ["proxy"],
+        "settings": []
+      },
+      "output": {
+        "mode": "account_table",
+        "title": "Состояние BUNKER",
+        "primary_kind": "account_monitor",
+        "columns": [
+          {
+            "key": "outcome",
+            "title": "Итог",
+            "type": "string"
+          },
+          {
+            "key": "collection_status",
+            "title": "Коллекция",
+            "type": "string"
+          },
+          {
+            "key": "eligible",
+            "title": "Допущен",
+            "type": "boolean"
+          },
+          {
+            "key": "mint_stage",
+            "title": "Стадия",
+            "type": "string"
+          },
+          {
+            "key": "floor_eth",
+            "title": "Floor",
+            "type": "decimal_string"
+          },
+          {
+            "key": "owned",
+            "title": "NFT",
+            "type": "integer",
+            "aggregate": "sum"
+          },
+          {
+            "key": "site_ok",
+            "title": "Сайт",
+            "type": "boolean"
+          }
+        ]
+      },
+      "options": {
+        "type": "object",
+        "properties": {
+          "account_concurrency": {
+            "type": "integer",
+            "title": "Параллельные аккаунты",
+            "description": "Сколько профилей проверять одновременно.",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 20,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Выполнение",
+              "order": 0,
+              "unit": "аккаунтов"
+            }
+          },
+          "account_pause_min_ms": {
+            "type": "integer",
+            "title": "Пауза аккаунта",
+            "description": "Случайная пауза перед каждым аккаунтом. Нижняя и верхняя границы задают диапазон.",
+            "default": 200,
+            "minimum": 0,
+            "maximum": 30000,
+            "multipleOf": 50,
+            "x-ui": {
+              "group": "Темп",
+              "order": 10,
+              "unit": "мс",
+              "control": "dual_range",
+              "range": {
+                "id": "account_pause",
+                "role": "from"
+              }
+            }
+          },
+          "account_pause_max_ms": {
+            "type": "integer",
+            "title": "Пауза аккаунта",
+            "description": "Случайная пауза перед каждым аккаунтом. Нижняя и верхняя границы задают диапазон.",
+            "default": 800,
+            "minimum": 0,
+            "maximum": 30000,
+            "multipleOf": 50,
+            "x-ui": {
+              "group": "Темп",
+              "order": 20,
+              "unit": "мс",
+              "control": "dual_range",
+              "range": {
+                "id": "account_pause",
+                "role": "to"
+              }
+            }
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "title": "Таймаут запроса",
+            "description": "Фиксированный сетевой таймаут proxy и сайта BUNKER. Безопасное значение — 30.",
+            "default": 30,
+            "minimum": 5,
+            "maximum": 120,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Сеть",
+              "order": 30,
+              "unit": "сек",
+              "advanced": true
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "watch_collection",
+      "name": "Следить за коллекцией",
+      "description": "Крутит снимок eligible и страницы коллекции до дедлайна или стопа. Не минтит и не ставит ордер.",
+      "risk": "read",
+      "account_mode": "one_or_more",
+      "permissions": {
+        "secrets": ["proxy"]
+      },
+      "resources": {
+        "account": ["proxy"],
+        "settings": []
+      },
+      "output": {
+        "mode": "account_table",
+        "title": "Слежение BUNKER",
+        "primary_kind": "account_monitor",
+        "columns": [
+          {
+            "key": "outcome",
+            "title": "Итог",
+            "type": "string"
+          },
+          {
+            "key": "collection_status",
+            "title": "Коллекция",
+            "type": "string"
+          },
+          {
+            "key": "eligible",
+            "title": "Допущен",
+            "type": "boolean"
+          },
+          {
+            "key": "mint_stage",
+            "title": "Стадия",
+            "type": "string"
+          },
+          {
+            "key": "floor_eth",
+            "title": "Floor",
+            "type": "decimal_string"
+          },
+          {
+            "key": "owned",
+            "title": "NFT",
+            "type": "integer",
+            "aggregate": "sum"
+          },
+          {
+            "key": "site_ok",
+            "title": "Сайт",
+            "type": "boolean"
+          }
+        ]
+      },
+      "options": {
+        "type": "object",
+        "properties": {
+          "account_concurrency": {
+            "type": "integer",
+            "title": "Параллельные аккаунты",
+            "description": "Сколько кошельков опрашивать в одном тике. Слежение стартует сразу по всем выбранным.",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 20,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Выполнение",
+              "order": 0,
+              "unit": "аккаунтов"
+            }
+          },
+          "poll_interval_seconds": {
+            "type": "integer",
+            "title": "Интервал опроса",
+            "description": "Пауза между снимками. Безопасное значение — 30 секунд.",
+            "default": 30,
+            "minimum": 15,
+            "maximum": 300,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Слежение",
+              "order": 10,
+              "unit": "сек"
+            }
+          },
+          "watch_minutes": {
+            "type": "integer",
+            "title": "Длительность",
+            "description": "Через сколько минут слежение само остановится. Стоп можно нажать раньше.",
+            "default": 60,
+            "minimum": 5,
+            "maximum": 180,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Слежение",
+              "order": 20,
+              "unit": "мин"
+            }
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "title": "Таймаут запроса",
+            "description": "Фиксированный сетевой таймаут proxy и сайта BUNKER. Безопасное значение — 30.",
+            "default": 30,
+            "minimum": 5,
+            "maximum": 120,
+            "multipleOf": 1,
+            "x-ui": {
+              "group": "Сеть",
+              "order": 30,
+              "unit": "сек",
+              "advanced": true
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "ui": {
+    "accent": "#FF9B32",
+    "monogram": "BK"
+  }
+}
