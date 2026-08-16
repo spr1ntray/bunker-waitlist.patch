@@ -4,7 +4,7 @@
   "contract_version": "SH-SOFTWARE-0.6/4",
   "id": "io.sprintray.bunker-waitlist",
   "name": "BUNKER",
-  "version": "1.2.9",
+  "version": "1.3.0",
   "description": "Waitlist BUNKER и WL-минт. Один кошелёк — один proxy.",
   "author": "sprintray",
   "presentation": {
@@ -269,6 +269,17 @@
               "unit": "аккаунтов"
             }
           },
+          "collection_slug": {
+            "type": "string",
+            "title": "Slug коллекции",
+            "description": "Кусок из ссылки OpenSea. Для opensea.io/collection/kuporh это kuporh. Можно вставить всю ссылку.",
+            "maxLength": 160,
+            "x-ui": {
+              "group": "Минт",
+              "order": 5,
+              "placeholder": "kuporh"
+            }
+          },
           "watch_minutes": {
             "type": "integer",
             "title": "Ждать WL",
@@ -325,7 +336,7 @@
             }
           }
         },
-        "required": [],
+        "required": ["collection_slug"],
         "additionalProperties": false
       }
     }

@@ -127,8 +127,8 @@ def _chain_ok(drop: dict[str, Any]) -> bool:
     return not chain or chain in {OPENSEA_CHAIN, "robinhood_chain", "hood"}
 
 
-def find_drop(*, proxy: str, timeout_seconds: int) -> dict[str, Any] | None:
-    for slug in slug_search_list():
+def find_drop(*, proxy: str, timeout_seconds: int, slugs: tuple[str, ...] = ()) -> dict[str, Any] | None:
+    for slug in slug_search_list(*slugs):
         try:
             found = get_drop(slug=slug, proxy=proxy, timeout_seconds=timeout_seconds)
         except DropRejected:
@@ -167,9 +167,10 @@ def collect_mint_targets(
     proxy: str,
     timeout_seconds: int,
     max_mint_wei: int,
+    slugs: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     targets: list[dict[str, Any]] = []
-    for slug in slug_search_list():
+    for slug in slug_search_list(*slugs):
         try:
             drop = get_drop(slug=slug, proxy=proxy, timeout_seconds=timeout_seconds)
         except DropRejected:

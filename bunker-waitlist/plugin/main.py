@@ -8,6 +8,7 @@ from typing import Any
 from soft_hub.sdk import CancelledError, HubAccount, HubContext
 
 from plugin.catalog import pick_comment, pick_handle, resolve_class
+from plugin.identity import slug_search_list
 from plugin.client import ApiRejected, SafeRequestError, normalize_wallet, submit_wallet
 from plugin.listing import parse_eth_wei
 from plugin.opensea_drop import (
@@ -324,6 +325,7 @@ def _run_mint(context: HubContext) -> dict[str, Any]:
     timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
     poll_seconds = _int_option(context.options, "poll_interval_seconds", 3, 2, 60)
     watch_minutes = _int_option(context.options, "watch_minutes", 720, 5, 10080)
+    collection_slug = _str_option(context.options, "collection_slug", "")
     try:
         max_mint_wei = parse_eth_wei(
             _str_option(context.options, "max_mint_eth", "0"),
@@ -348,18 +350,26 @@ def _run_mint(context: HubContext) -> dict[str, Any]:
             "watch_minutes": watch_minutes,
             "poll_interval_seconds": poll_seconds,
             "max_mint_wei": max_mint_wei,
+            "collection_slug": collection_slug,
         },
     )
-    if max_mint_wei < 0:
+    slugs = slug_search_list(collection_slug)
+    if not slugs or max_mint_wei < 0:
+        reason = "no_slug" if not slugs else "invalid_price"
+        message = (
+            "Укажи slug коллекции с OpenSea"
+            if reason == "no_slug"
+            else "Некорректный потолок цены минта"
+        )
         for account in context.accounts:
             _finish_mint(
                 context,
                 account,
                 status="blocked",
                 stage="preflight",
-                message="Некорректный потолок цены минта",
+                message=message,
                 result_status="blocked",
-                data=_empty_mint("invalid_price", "preflight"),
+                data=_empty_mint(reason, "preflight"),
             )
         return {
             "total": len(context.accounts),
@@ -401,10 +411,11 @@ def _run_mint(context: HubContext) -> dict[str, Any]:
         return counters
 
     def _watching(*, extra: str = "") -> None:
+        shown = slugs[0] if slugs else "коллекцию"
         if max_mint_wei == 0:
-            message = "Пылесосим бесплатный WL по slug. Public не трогаем"
+            message = f"Ждём бесплатный WL на {shown}. Public не трогаем"
         else:
-            message = f"Ждём WL не дороже {context.options.get('max_mint_eth', '0')} ETH"
+            message = f"Ждём WL на {shown} не дороже {context.options.get('max_mint_eth', '0')} ETH"
         if extra:
             message = extra
         for account in ready:
@@ -431,6 +442,7 @@ def _run_mint(context: HubContext) -> dict[str, Any]:
                     proxy=lead.secret("proxy"),
                     timeout_seconds=timeout_seconds,
                     max_mint_wei=max_mint_wei,
+                    slugs=slugs,
                 )
                 if item["slug"] not in done_slugs
             ]
@@ -468,6 +480,7 @@ def _run_mint(context: HubContext) -> dict[str, Any]:
                         find_drop(
                             proxy=lead.secret("proxy"),
                             timeout_seconds=timeout_seconds,
+                            slugs=slugs,
                         )
                     )
                 except DropRejected:
