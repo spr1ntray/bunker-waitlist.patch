@@ -68,6 +68,7 @@ def wait_for_allowlist(
     deadline_s: float,
     poll_s: float,
     check_cancelled: Callable[[], None],
+    on_wait: Callable[[dict[str, Any]], None] | None = None,
     **reader_hooks: Any,
 ) -> dict[str, Any]:
     reader = make_stage_reader(
@@ -81,6 +82,7 @@ def wait_for_allowlist(
         deadline_s=deadline_s,
         poll_s=poll_s,
         check_cancelled=check_cancelled,
+        on_wait=on_wait,
     )
 
 

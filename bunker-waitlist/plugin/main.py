@@ -374,16 +374,25 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
     if not ready:
         return counters
 
+    def _watching(snapshot: dict[str, Any] | None = None) -> None:
+        reason = str((snapshot or {}).get("reason") or "")
+        if reason == "unpublished":
+            message = "Коллекция ещё не вышла — наблюдаем за минтом"
+        else:
+            message = "Наблюдаем за минтом. Ждём открытие WL"
+        for account in ready:
+            context.account_state(
+                account.id,
+                status="running",
+                stage="Наблюдает за минтом",
+                progress=0.18,
+                message=message,
+            )
+
     lead = ready[0]
     deadline_s = watch_minutes * 60
+    _watching()
     try:
-        context.account_state(
-            lead.id,
-            status="running",
-            stage="wait",
-            progress=0.15,
-            message="Ждём открытие allowlist. Минтить public не будем",
-        )
         hunted = wait_for_allowlist(
             proxy=lead.secret("proxy"),
             timeout_seconds=timeout_seconds,
@@ -391,6 +400,7 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
             deadline_s=deadline_s,
             poll_s=poll_seconds,
             check_cancelled=context.check_cancelled,
+            on_wait=_watching,
         )
     except HuntTimeout:
         for account in ready:

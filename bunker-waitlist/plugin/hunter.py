@@ -20,6 +20,7 @@ def hunt_allowlist(
     check_cancelled: Callable[[], None],
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    on_wait: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Poll until allowlist is ready. Refuse public. Timeout is not a mint."""
     poll = max(0.2, float(poll_s))
@@ -34,6 +35,8 @@ def hunt_allowlist(
             raise ValueError("public_stage")
         if stage == STAGE_ENDED:
             raise ValueError("stage_ended")
+        if on_wait is not None:
+            on_wait(snapshot)
         remaining = end - monotonic()
         if remaining <= 0:
             raise HuntTimeout()
