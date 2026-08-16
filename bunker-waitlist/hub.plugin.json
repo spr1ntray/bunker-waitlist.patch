@@ -4,24 +4,28 @@
   "contract_version": "SH-SOFTWARE-0.6/4",
   "id": "io.sprintray.bunker-waitlist",
   "name": "BUNKER",
-  "version": "1.2.1",
-  "description": "Waitlist BUNKER и ожидание WL-минта. Один кошелёк — один proxy.",
+  "version": "1.2.2",
+  "description": "Waitlist BUNKER и WL-минт. Один кошелёк — один proxy.",
   "author": "sprintray",
   "presentation": {
     "display_name": "BUNKER",
-    "description": "Пишет waitlist и сам ждёт WL-минт. Public не трогает. Один кошелёк — один proxy.",
+    "description": "Пишет waitlist и сам минтит WL. Public не трогает. Один кошелёк — один proxy.",
     "assets": {
       "icon": "assets/icon.png",
       "image": "assets/image.png"
     }
   },
   "catalog": {
-    "sections": ["nft"]
+    "sections": [
+      "nft"
+    ]
   },
   "compatibility": {
     "hub": ">=0.6.15",
     "python": ">=3.12,<3.13",
-    "os": ["darwin"]
+    "os": [
+      "darwin"
+    ]
   },
   "runtime": {
     "type": "python",
@@ -33,14 +37,19 @@
     "heartbeat_seconds": 15
   },
   "permissions": {
-    "secrets": ["evm_private_key", "proxy"],
+    "secrets": [
+      "evm_private_key",
+      "proxy"
+    ],
     "network": [
       "thebunkerhood.com",
       "api.opensea.io",
       "opensea.io",
       "rpc.mainnet.chain.robinhood.com"
     ],
-    "chains": [4663],
+    "chains": [
+      4663
+    ],
     "financial_risk": "mainnet",
     "browser": false,
     "local_services": []
@@ -53,10 +62,14 @@
       "risk": "external_write",
       "account_mode": "one_or_more",
       "permissions": {
-        "secrets": ["proxy"]
+        "secrets": [
+          "proxy"
+        ]
       },
       "resources": {
-        "account": ["proxy"],
+        "account": [
+          "proxy"
+        ],
         "settings": []
       },
       "output": {
@@ -188,258 +201,6 @@
       }
     },
     {
-      "id": "inspect",
-      "name": "Проверить аккаунты",
-      "description": "Читает сайт BUNKER и статус коллекции через proxy. Ничего не записывает и не минтит.",
-      "risk": "read",
-      "account_mode": "one_or_more",
-      "permissions": {
-        "secrets": ["proxy"]
-      },
-      "resources": {
-        "account": ["proxy"],
-        "settings": []
-      },
-      "output": {
-        "mode": "account_table",
-        "title": "Состояние BUNKER",
-        "primary_kind": "account_monitor",
-        "columns": [
-          {
-            "key": "outcome",
-            "title": "Итог",
-            "type": "string"
-          },
-          {
-            "key": "collection_status",
-            "title": "Коллекция",
-            "type": "string"
-          },
-          {
-            "key": "eligible",
-            "title": "Допущен",
-            "type": "boolean"
-          },
-          {
-            "key": "mint_stage",
-            "title": "Стадия",
-            "type": "string"
-          },
-          {
-            "key": "floor_eth",
-            "title": "Floor",
-            "type": "decimal_string"
-          },
-          {
-            "key": "owned",
-            "title": "NFT",
-            "type": "integer",
-            "aggregate": "sum"
-          },
-          {
-            "key": "site_ok",
-            "title": "Сайт",
-            "type": "boolean"
-          }
-        ]
-      },
-      "options": {
-        "type": "object",
-        "properties": {
-          "account_concurrency": {
-            "type": "integer",
-            "title": "Параллельные аккаунты",
-            "description": "Сколько профилей проверять одновременно.",
-            "default": 5,
-            "minimum": 1,
-            "maximum": 20,
-            "multipleOf": 1,
-            "x-ui": {
-              "group": "Выполнение",
-              "order": 0,
-              "unit": "аккаунтов"
-            }
-          },
-          "account_pause_min_ms": {
-            "type": "integer",
-            "title": "Пауза аккаунта",
-            "description": "Случайная пауза перед каждым аккаунтом. Нижняя и верхняя границы задают диапазон.",
-            "default": 200,
-            "minimum": 0,
-            "maximum": 30000,
-            "multipleOf": 50,
-            "x-ui": {
-              "group": "Темп",
-              "order": 10,
-              "unit": "мс",
-              "control": "dual_range",
-              "range": {
-                "id": "account_pause",
-                "role": "from"
-              }
-            }
-          },
-          "account_pause_max_ms": {
-            "type": "integer",
-            "title": "Пауза аккаунта",
-            "description": "Случайная пауза перед каждым аккаунтом. Нижняя и верхняя границы задают диапазон.",
-            "default": 800,
-            "minimum": 0,
-            "maximum": 30000,
-            "multipleOf": 50,
-            "x-ui": {
-              "group": "Темп",
-              "order": 20,
-              "unit": "мс",
-              "control": "dual_range",
-              "range": {
-                "id": "account_pause",
-                "role": "to"
-              }
-            }
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "title": "Таймаут запроса",
-            "description": "Фиксированный сетевой таймаут proxy и сайта BUNKER. Безопасное значение — 30.",
-            "default": 30,
-            "minimum": 5,
-            "maximum": 120,
-            "multipleOf": 1,
-            "x-ui": {
-              "group": "Сеть",
-              "order": 30,
-              "unit": "сек",
-              "advanced": true
-            }
-          }
-        },
-        "required": [],
-        "additionalProperties": false
-      }
-    },
-    {
-      "id": "watch_collection",
-      "name": "Следить за коллекцией",
-      "description": "Крутит снимок eligible и страницы коллекции до дедлайна или стопа. Не минтит и не ставит ордер.",
-      "risk": "read",
-      "account_mode": "one_or_more",
-      "permissions": {
-        "secrets": ["proxy"]
-      },
-      "resources": {
-        "account": ["proxy"],
-        "settings": []
-      },
-      "output": {
-        "mode": "account_table",
-        "title": "Слежение BUNKER",
-        "primary_kind": "account_monitor",
-        "columns": [
-          {
-            "key": "outcome",
-            "title": "Итог",
-            "type": "string"
-          },
-          {
-            "key": "collection_status",
-            "title": "Коллекция",
-            "type": "string"
-          },
-          {
-            "key": "eligible",
-            "title": "Допущен",
-            "type": "boolean"
-          },
-          {
-            "key": "mint_stage",
-            "title": "Стадия",
-            "type": "string"
-          },
-          {
-            "key": "floor_eth",
-            "title": "Floor",
-            "type": "decimal_string"
-          },
-          {
-            "key": "owned",
-            "title": "NFT",
-            "type": "integer",
-            "aggregate": "sum"
-          },
-          {
-            "key": "site_ok",
-            "title": "Сайт",
-            "type": "boolean"
-          }
-        ]
-      },
-      "options": {
-        "type": "object",
-        "properties": {
-          "account_concurrency": {
-            "type": "integer",
-            "title": "Параллельные аккаунты",
-            "description": "Сколько кошельков опрашивать в одном тике. Слежение стартует сразу по всем выбранным.",
-            "default": 5,
-            "minimum": 1,
-            "maximum": 20,
-            "multipleOf": 1,
-            "x-ui": {
-              "group": "Выполнение",
-              "order": 0,
-              "unit": "аккаунтов"
-            }
-          },
-          "poll_interval_seconds": {
-            "type": "integer",
-            "title": "Интервал опроса",
-            "description": "Пауза между снимками. Безопасное значение — 30 секунд.",
-            "default": 30,
-            "minimum": 15,
-            "maximum": 300,
-            "multipleOf": 1,
-            "x-ui": {
-              "group": "Слежение",
-              "order": 10,
-              "unit": "сек"
-            }
-          },
-          "watch_minutes": {
-            "type": "integer",
-            "title": "Длительность",
-            "description": "Через сколько минут слежение само остановится. Стоп можно нажать раньше.",
-            "default": 60,
-            "minimum": 5,
-            "maximum": 180,
-            "multipleOf": 1,
-            "x-ui": {
-              "group": "Слежение",
-              "order": 20,
-              "unit": "мин"
-            }
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "title": "Таймаут запроса",
-            "description": "Фиксированный сетевой таймаут proxy и сайта BUNKER. Безопасное значение — 30.",
-            "default": 30,
-            "minimum": 5,
-            "maximum": 120,
-            "multipleOf": 1,
-            "x-ui": {
-              "group": "Сеть",
-              "order": 30,
-              "unit": "сек",
-              "advanced": true
-            }
-          }
-        },
-        "required": [],
-        "additionalProperties": false
-      }
-    },
-    {
       "id": "mint_and_dump",
       "name": "WL-минт и демп",
       "description": "Ждёт allowlist, минтит только WL и ставит ордер первым в стакане.",
@@ -447,10 +208,16 @@
       "account_mode": "one_or_more",
       "confirmation_phrase": "BUNKER MINT",
       "permissions": {
-        "secrets": ["evm_private_key", "proxy"]
+        "secrets": [
+          "evm_private_key",
+          "proxy"
+        ]
       },
       "resources": {
-        "account": ["private_key", "proxy"],
+        "account": [
+          "private_key",
+          "proxy"
+        ],
         "settings": []
       },
       "output": {
@@ -458,12 +225,36 @@
         "title": "WL-минт BUNKER",
         "primary_kind": "account_mint",
         "columns": [
-          {"key": "outcome", "title": "Итог", "type": "string"},
-          {"key": "stage", "title": "Стадия", "type": "string"},
-          {"key": "minted", "title": "Сминтил", "type": "boolean"},
-          {"key": "listed", "title": "В стакане", "type": "boolean"},
-          {"key": "token_id", "title": "Token", "type": "string"},
-          {"key": "tx_hash", "title": "Tx", "type": "string"}
+          {
+            "key": "outcome",
+            "title": "Итог",
+            "type": "string"
+          },
+          {
+            "key": "stage",
+            "title": "Стадия",
+            "type": "string"
+          },
+          {
+            "key": "minted",
+            "title": "Сминтил",
+            "type": "boolean"
+          },
+          {
+            "key": "listed",
+            "title": "В стакане",
+            "type": "boolean"
+          },
+          {
+            "key": "token_id",
+            "title": "Token",
+            "type": "string"
+          },
+          {
+            "key": "tx_hash",
+            "title": "Tx",
+            "type": "string"
+          }
         ]
       },
       "options": {
@@ -477,7 +268,11 @@
             "minimum": 1,
             "maximum": 20,
             "multipleOf": 1,
-            "x-ui": {"group": "Выполнение", "order": 0, "unit": "аккаунтов"}
+            "x-ui": {
+              "group": "Выполнение",
+              "order": 0,
+              "unit": "аккаунтов"
+            }
           },
           "watch_minutes": {
             "type": "integer",
@@ -487,7 +282,11 @@
             "minimum": 5,
             "maximum": 720,
             "multipleOf": 1,
-            "x-ui": {"group": "Ожидание", "order": 10, "unit": "мин"}
+            "x-ui": {
+              "group": "Ожидание",
+              "order": 10,
+              "unit": "мин"
+            }
           },
           "poll_interval_seconds": {
             "type": "integer",
@@ -497,7 +296,11 @@
             "minimum": 2,
             "maximum": 60,
             "multipleOf": 1,
-            "x-ui": {"group": "Ожидание", "order": 20, "unit": "сек"}
+            "x-ui": {
+              "group": "Ожидание",
+              "order": 20,
+              "unit": "сек"
+            }
           },
           "timeout_seconds": {
             "type": "integer",
@@ -507,7 +310,12 @@
             "minimum": 5,
             "maximum": 120,
             "multipleOf": 1,
-            "x-ui": {"group": "Сеть", "order": 30, "unit": "сек", "advanced": true}
+            "x-ui": {
+              "group": "Сеть",
+              "order": 30,
+              "unit": "сек",
+              "advanced": true
+            }
           }
         },
         "required": [],
@@ -522,10 +330,16 @@
       "account_mode": "one_or_more",
       "confirmation_phrase": "BUNKER MINT",
       "permissions": {
-        "secrets": ["evm_private_key", "proxy"]
+        "secrets": [
+          "evm_private_key",
+          "proxy"
+        ]
       },
       "resources": {
-        "account": ["private_key", "proxy"],
+        "account": [
+          "private_key",
+          "proxy"
+        ],
         "settings": []
       },
       "output": {
@@ -533,12 +347,36 @@
         "title": "WL-минт BUNKER",
         "primary_kind": "account_mint",
         "columns": [
-          {"key": "outcome", "title": "Итог", "type": "string"},
-          {"key": "stage", "title": "Стадия", "type": "string"},
-          {"key": "minted", "title": "Сминтил", "type": "boolean"},
-          {"key": "listed", "title": "В стакане", "type": "boolean"},
-          {"key": "token_id", "title": "Token", "type": "string"},
-          {"key": "tx_hash", "title": "Tx", "type": "string"}
+          {
+            "key": "outcome",
+            "title": "Итог",
+            "type": "string"
+          },
+          {
+            "key": "stage",
+            "title": "Стадия",
+            "type": "string"
+          },
+          {
+            "key": "minted",
+            "title": "Сминтил",
+            "type": "boolean"
+          },
+          {
+            "key": "listed",
+            "title": "В стакане",
+            "type": "boolean"
+          },
+          {
+            "key": "token_id",
+            "title": "Token",
+            "type": "string"
+          },
+          {
+            "key": "tx_hash",
+            "title": "Tx",
+            "type": "string"
+          }
         ]
       },
       "options": {
@@ -552,7 +390,11 @@
             "minimum": 1,
             "maximum": 20,
             "multipleOf": 1,
-            "x-ui": {"group": "Выполнение", "order": 0, "unit": "аккаунтов"}
+            "x-ui": {
+              "group": "Выполнение",
+              "order": 0,
+              "unit": "аккаунтов"
+            }
           },
           "watch_minutes": {
             "type": "integer",
@@ -562,7 +404,11 @@
             "minimum": 5,
             "maximum": 720,
             "multipleOf": 1,
-            "x-ui": {"group": "Ожидание", "order": 10, "unit": "мин"}
+            "x-ui": {
+              "group": "Ожидание",
+              "order": 10,
+              "unit": "мин"
+            }
           },
           "poll_interval_seconds": {
             "type": "integer",
@@ -572,7 +418,11 @@
             "minimum": 2,
             "maximum": 60,
             "multipleOf": 1,
-            "x-ui": {"group": "Ожидание", "order": 20, "unit": "сек"}
+            "x-ui": {
+              "group": "Ожидание",
+              "order": 20,
+              "unit": "сек"
+            }
           },
           "list_price_eth": {
             "type": "string",
@@ -580,7 +430,11 @@
             "description": "Ордер встанет ровно по этой цене.",
             "default": "0.01",
             "maxLength": 24,
-            "x-ui": {"group": "Стакан", "order": 30, "placeholder": "0.01"}
+            "x-ui": {
+              "group": "Стакан",
+              "order": 30,
+              "placeholder": "0.01"
+            }
           },
           "timeout_seconds": {
             "type": "integer",
@@ -590,7 +444,12 @@
             "minimum": 5,
             "maximum": 120,
             "multipleOf": 1,
-            "x-ui": {"group": "Сеть", "order": 40, "unit": "сек", "advanced": true}
+            "x-ui": {
+              "group": "Сеть",
+              "order": 40,
+              "unit": "сек",
+              "advanced": true
+            }
           }
         },
         "required": [],
@@ -605,10 +464,16 @@
       "account_mode": "one_or_more",
       "confirmation_phrase": "BUNKER MINT",
       "permissions": {
-        "secrets": ["evm_private_key", "proxy"]
+        "secrets": [
+          "evm_private_key",
+          "proxy"
+        ]
       },
       "resources": {
-        "account": ["private_key", "proxy"],
+        "account": [
+          "private_key",
+          "proxy"
+        ],
         "settings": []
       },
       "output": {
@@ -616,12 +481,36 @@
         "title": "WL-минт BUNKER",
         "primary_kind": "account_mint",
         "columns": [
-          {"key": "outcome", "title": "Итог", "type": "string"},
-          {"key": "stage", "title": "Стадия", "type": "string"},
-          {"key": "minted", "title": "Сминтил", "type": "boolean"},
-          {"key": "listed", "title": "В стакане", "type": "boolean"},
-          {"key": "token_id", "title": "Token", "type": "string"},
-          {"key": "tx_hash", "title": "Tx", "type": "string"}
+          {
+            "key": "outcome",
+            "title": "Итог",
+            "type": "string"
+          },
+          {
+            "key": "stage",
+            "title": "Стадия",
+            "type": "string"
+          },
+          {
+            "key": "minted",
+            "title": "Сминтил",
+            "type": "boolean"
+          },
+          {
+            "key": "listed",
+            "title": "В стакане",
+            "type": "boolean"
+          },
+          {
+            "key": "token_id",
+            "title": "Token",
+            "type": "string"
+          },
+          {
+            "key": "tx_hash",
+            "title": "Tx",
+            "type": "string"
+          }
         ]
       },
       "options": {
@@ -635,7 +524,11 @@
             "minimum": 1,
             "maximum": 20,
             "multipleOf": 1,
-            "x-ui": {"group": "Выполнение", "order": 0, "unit": "аккаунтов"}
+            "x-ui": {
+              "group": "Выполнение",
+              "order": 0,
+              "unit": "аккаунтов"
+            }
           },
           "watch_minutes": {
             "type": "integer",
@@ -645,7 +538,11 @@
             "minimum": 5,
             "maximum": 720,
             "multipleOf": 1,
-            "x-ui": {"group": "Ожидание", "order": 10, "unit": "мин"}
+            "x-ui": {
+              "group": "Ожидание",
+              "order": 10,
+              "unit": "мин"
+            }
           },
           "poll_interval_seconds": {
             "type": "integer",
@@ -655,7 +552,11 @@
             "minimum": 2,
             "maximum": 60,
             "multipleOf": 1,
-            "x-ui": {"group": "Ожидание", "order": 20, "unit": "сек"}
+            "x-ui": {
+              "group": "Ожидание",
+              "order": 20,
+              "unit": "сек"
+            }
           },
           "profit_percent": {
             "type": "integer",
@@ -665,7 +566,11 @@
             "minimum": 0,
             "maximum": 500,
             "multipleOf": 1,
-            "x-ui": {"group": "Стакан", "order": 30, "unit": "%"}
+            "x-ui": {
+              "group": "Стакан",
+              "order": 30,
+              "unit": "%"
+            }
           },
           "timeout_seconds": {
             "type": "integer",
@@ -675,7 +580,12 @@
             "minimum": 5,
             "maximum": 120,
             "multipleOf": 1,
-            "x-ui": {"group": "Сеть", "order": 40, "unit": "сек", "advanced": true}
+            "x-ui": {
+              "group": "Сеть",
+              "order": 40,
+              "unit": "сек",
+              "advanced": true
+            }
           }
         },
         "required": [],

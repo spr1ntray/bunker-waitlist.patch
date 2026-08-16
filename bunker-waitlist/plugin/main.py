@@ -8,27 +8,14 @@ from typing import Any
 from soft_hub.sdk import CancelledError, HubAccount, HubContext
 
 from plugin.catalog import pick_comment, pick_handle, resolve_class
-from plugin.client import ApiRejected, SafeRequestError, normalize_wallet, submit_wallet
+from plugin.client import ApiRejected, SafeRequestError, fetch_site, normalize_wallet, submit_wallet
 from plugin.hunter import HuntTimeout
 from plugin.mint_flow import wait_for_allowlist, wait_for_signed_payload
 from plugin.proxy import proxy_to_url
-from plugin.snapshot import AccountMonitor, collect_monitor
 
 PRIMARY_KIND = "account_snapshot"
-MONITOR_KIND = "account_monitor"
 MINT_KIND = "account_mint"
 _REGISTER_KEYS = frozenset({"outcome", "class_name", "x_handle", "queued"})
-_MONITOR_KEYS = frozenset(
-    {
-        "outcome",
-        "collection_status",
-        "eligible",
-        "mint_stage",
-        "floor_eth",
-        "owned",
-        "site_ok",
-    }
-)
 _MINT_KEYS = frozenset(
     {"outcome", "stage", "minted", "listed", "token_id", "tx_hash"}
 )
@@ -64,10 +51,6 @@ class _RandomAccountPause:
 def run(context: HubContext) -> dict[str, Any]:
     if context.action_id == "register_waitlist":
         return _run_register(context)
-    if context.action_id == "inspect":
-        return _run_inspect(context)
-    if context.action_id == "watch_collection":
-        return _run_watch(context)
     if context.action_id in {"mint_and_dump", "mint_and_fixed", "mint_and_percent"}:
         return _run_mint_and_list(context)
     raise ValueError("unsupported_action")
@@ -118,57 +101,6 @@ def _run_register(context: HubContext) -> dict[str, Any]:
             used_handles=used_handles,
             used_posts=used_posts,
             handle_lock=handle_lock,
-        )
-        with lock:
-            counters[status] = counters.get(status, 0) + 1
-        return status
-
-    context.map_accounts(worker)
-    return {
-        "total": counters["total"],
-        "succeeded": counters.get("succeeded", 0),
-        "failed": counters.get("failed", 0),
-        "blocked": counters.get("blocked", 0),
-        "cancelled": counters.get("cancelled", 0),
-    }
-
-
-def _run_inspect(context: HubContext) -> dict[str, Any]:
-    timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
-    account_lo, account_hi = _ms_range(
-        context.options,
-        "account_pause_min_ms",
-        "account_pause_max_ms",
-        default_lo=200,
-        default_hi=800,
-        high=30000,
-    )
-    account_pause = _RandomAccountPause(account_lo, account_hi)
-    counters = {
-        "total": len(context.accounts),
-        "succeeded": 0,
-        "failed": 0,
-        "blocked": 0,
-        "cancelled": 0,
-    }
-    lock = threading.Lock()
-
-    context.log(
-        "Старт проверки аккаунтов BUNKER",
-        data={
-            "accounts": len(context.accounts),
-            "account_concurrency": int(getattr(context, "account_concurrency", 1) or 1),
-            "account_pause_ms": [account_lo, account_hi],
-            "timeout_seconds": timeout_seconds,
-        },
-    )
-
-    def worker(account: HubAccount) -> str:
-        status = _process_inspect(
-            context,
-            account,
-            timeout_seconds=timeout_seconds,
-            account_pause=account_pause,
         )
         with lock:
             counters[status] = counters.get(status, 0) + 1
@@ -380,292 +312,6 @@ def _process_register(
         return "failed"
 
 
-def _process_inspect(
-    context: HubContext,
-    account: HubAccount,
-    *,
-    timeout_seconds: int,
-    account_pause: _RandomAccountPause,
-) -> str:
-    context.check_cancelled()
-    account_pause.wait(context)
-    context.check_cancelled()
-    context.account_state(
-        account.id,
-        status="running",
-        stage="preflight",
-        progress=0.05,
-        message="Проверяем proxy",
-    )
-
-    try:
-        try:
-            proxy = account.secret("proxy")
-            proxy_to_url(proxy)
-        except (KeyError, ValueError):
-            _finish_monitor(
-                context,
-                account,
-                status="blocked",
-                stage="preflight",
-                message="Нет proxy либо он неверный",
-                result_status="blocked",
-                snapshot=_blocked_monitor(),
-            )
-            return "blocked"
-
-        context.check_cancelled()
-        context.account_state(
-            account.id,
-            status="running",
-            stage="inspect",
-            progress=0.35,
-            message="Читаем сайт и статус коллекции",
-        )
-        snapshot = collect_monitor(proxy=proxy, timeout_seconds=timeout_seconds)
-        context.account_state(
-            account.id,
-            status="running",
-            stage="response_validated",
-            progress=0.90,
-            message=_monitor_message(snapshot),
-        )
-        if snapshot.outcome == "failed":
-            _finish_monitor(
-                context,
-                account,
-                status="failed",
-                stage="failed",
-                message=_monitor_message(snapshot),
-                result_status="failed",
-                snapshot=snapshot,
-            )
-            return "failed"
-        _finish_monitor(
-            context,
-            account,
-            status="succeeded",
-            stage="completed",
-            message=_monitor_message(snapshot),
-            result_status="succeeded",
-            snapshot=snapshot,
-            progress=1.0,
-        )
-        return "succeeded"
-
-    except CancelledError:
-        context.account_state(
-            account.id,
-            status="cancelled",
-            stage="cancelled",
-            message="Проверка остановлена",
-        )
-        return "cancelled"
-    except Exception:
-        _finish_monitor(
-            context,
-            account,
-            status="failed",
-            stage="failed",
-            message="Не удалось проверить аккаунт",
-            result_status="failed",
-            snapshot=_failed_monitor(),
-        )
-        return "failed"
-
-
-def _run_watch(context: HubContext) -> dict[str, Any]:
-    timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
-    poll_seconds = _int_option(context.options, "poll_interval_seconds", 30, 15, 300)
-    watch_minutes = _int_option(context.options, "watch_minutes", 60, 5, 180)
-
-    counters = {
-        "total": len(context.accounts),
-        "succeeded": 0,
-        "failed": 0,
-        "blocked": 0,
-        "cancelled": 0,
-    }
-
-    context.log(
-        "Старт слежения за коллекцией BUNKER",
-        data={
-            "accounts": len(context.accounts),
-            "account_concurrency": int(getattr(context, "account_concurrency", 1) or 1),
-            "poll_interval_seconds": poll_seconds,
-            "watch_minutes": watch_minutes,
-            "timeout_seconds": timeout_seconds,
-        },
-    )
-
-    ready: list[HubAccount] = []
-    for account in context.accounts:
-        context.check_cancelled()
-        context.account_state(
-            account.id,
-            status="running",
-            stage="preflight",
-            progress=0.05,
-            message="Проверяем proxy",
-        )
-        try:
-            proxy_to_url(account.secret("proxy"))
-        except (KeyError, ValueError):
-            _finish_monitor(
-                context,
-                account,
-                status="blocked",
-                stage="preflight",
-                message="Нет proxy либо он неверный",
-                result_status="blocked",
-                snapshot=_blocked_monitor(),
-            )
-            counters["blocked"] += 1
-            continue
-        ready.append(account)
-
-    if not ready:
-        return counters
-
-    last: dict[str, AccountMonitor] = {}
-    deadline = time.monotonic() + watch_minutes * 60
-    tick = 0
-
-    try:
-        while True:
-            context.check_cancelled()
-            tick += 1
-
-            def _tick(account: HubAccount) -> AccountMonitor:
-                context.check_cancelled()
-                proxy = account.secret("proxy")
-                return collect_monitor(proxy=proxy, timeout_seconds=timeout_seconds)
-
-            snapshots = context.map_accounts(_tick, accounts=tuple(ready))
-            for account, snapshot in zip(ready, snapshots, strict=True):
-                last[account.id] = snapshot
-                context.account_state(
-                    account.id,
-                    status="running",
-                    stage="inspect",
-                    progress=0.20,
-                    message=_monitor_message(snapshot),
-                )
-            context.emit(
-                "heartbeat",
-                message="Слежение активно",
-                data={"tick": tick, "accounts": len(ready)},
-            )
-            if time.monotonic() >= deadline:
-                break
-            remaining = deadline - time.monotonic()
-            _interruptible_sleep(context, min(float(poll_seconds), remaining))
-            if time.monotonic() >= deadline:
-                break
-    except CancelledError:
-        for account in ready:
-            context.account_state(
-                account.id,
-                status="cancelled",
-                stage="cancelled",
-                message="Слежение остановлено",
-            )
-            counters["cancelled"] += 1
-        counters["total"] = (
-            counters["succeeded"]
-            + counters["failed"]
-            + counters["blocked"]
-            + counters["cancelled"]
-        )
-        return counters
-
-    for account in ready:
-        snapshot = last.get(account.id) or _failed_monitor()
-        if snapshot.outcome == "failed":
-            _finish_monitor(
-                context,
-                account,
-                status="failed",
-                stage="failed",
-                message=_monitor_message(snapshot),
-                result_status="failed",
-                snapshot=snapshot,
-            )
-            counters["failed"] += 1
-            continue
-        _finish_monitor(
-            context,
-            account,
-            status="succeeded",
-            stage="completed",
-            message=_monitor_message(snapshot),
-            result_status="succeeded",
-            snapshot=snapshot,
-            progress=1.0,
-        )
-        counters["succeeded"] += 1
-    return counters
-
-
-def _blocked_monitor() -> AccountMonitor:
-    return AccountMonitor(
-        outcome="blocked",
-        collection_status="unpublished",
-        eligible=False,
-        mint_stage="unpublished",
-        floor_eth="",
-        owned=0,
-        site_ok=False,
-    )
-
-
-def _failed_monitor() -> AccountMonitor:
-    return AccountMonitor(
-        outcome="failed",
-        collection_status="unpublished",
-        eligible=False,
-        mint_stage="unpublished",
-        floor_eth="",
-        owned=0,
-        site_ok=False,
-    )
-
-
-def _monitor_message(snapshot: AccountMonitor) -> str:
-    if snapshot.outcome == "failed":
-        return "Не удалось прочитать сайт через proxy"
-    if snapshot.collection_status == "unpublished":
-        return "Коллекция ещё не закреплена"
-    if snapshot.eligible:
-        return "Аккаунт допущен"
-    return "Аккаунт не допущен"
-
-
-def _finish_monitor(
-    context: HubContext,
-    account: HubAccount,
-    *,
-    status: str,
-    stage: str,
-    message: str,
-    result_status: str,
-    snapshot: AccountMonitor,
-    progress: float | None = None,
-) -> None:
-    _finish(
-        context,
-        account,
-        status=status,
-        stage=stage,
-        message=message,
-        result_status=result_status,
-        data=dict(snapshot.as_data()),
-        progress=progress,
-        keys=_MONITOR_KEYS,
-        kind=MONITOR_KIND,
-    )
-
-
 def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
     timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
     poll_seconds = _int_option(context.options, "poll_interval_seconds", 3, 2, 60)
@@ -708,7 +354,8 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
         )
         try:
             normalize_wallet(account.evm_address)
-            proxy_to_url(account.secret("proxy"))
+            proxy = account.secret("proxy")
+            proxy_to_url(proxy)
             account.secret("evm_private_key")
         except (KeyError, ValueError):
             _finish_mint(
@@ -717,6 +364,22 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
                 status="blocked",
                 stage="preflight",
                 message="Нет приватника или proxy",
+                result_status="blocked",
+                data=_empty_mint("blocked", "preflight"),
+            )
+            counters["blocked"] += 1
+            continue
+        try:
+            site = fetch_site(proxy=proxy, timeout_seconds=timeout_seconds)
+            if not site.ok:
+                raise SafeRequestError("site_down")
+        except (SafeRequestError, ApiRejected):
+            _finish_mint(
+                context,
+                account,
+                status="blocked",
+                stage="preflight",
+                message="Proxy не открывает сайт",
                 result_status="blocked",
                 data=_empty_mint("blocked", "preflight"),
             )
@@ -733,7 +396,7 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
         context.account_state(
             lead.id,
             status="running",
-            stage="inspect",
+            stage="wait",
             progress=0.15,
             message="Ждём открытие allowlist. Минтить public не будем",
         )
