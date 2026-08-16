@@ -13,11 +13,10 @@ from plugin.client import ApiRejected, SafeRequestError, normalize_wallet, submi
 from plugin.listing import parse_eth_wei
 from plugin.opensea_drop import (
     DropRejected,
+    active_stage_watch_message,
     assert_safe_mint_tx,
     build_mint_tx,
-    active_stage_watch_message,
-    collect_mint_targets,
-    find_drop,
+    inspect_slugs,
     tx_value_wei,
 )
 from plugin.proxy import proxy_to_url
@@ -428,64 +427,84 @@ def _run_mint(context: HubContext) -> dict[str, Any]:
             )
 
     lead = ready[0]
-    deadline_s = watch_minutes * 60
-    deadline = time.monotonic() + deadline_s
-    done_slugs: set[str] = set()
+    deadline = time.monotonic() + watch_minutes * 60
+    closed_slugs: set[str] = set()
     best: dict[str, str] = {}
     _watching()
     try:
         while True:
             context.check_cancelled()
-            targets = [
-                item
-                for item in collect_mint_targets(
-                    proxy=lead.secret("proxy"),
-                    timeout_seconds=timeout_seconds,
-                    max_mint_wei=max_mint_wei,
-                    slugs=slugs,
+            if all(best.get(account.id) == "succeeded" for account in ready):
+                break
+            rows = inspect_slugs(
+                proxy=lead.secret("proxy"),
+                timeout_seconds=timeout_seconds,
+                max_mint_wei=max_mint_wei,
+                slugs=slugs,
+            )
+            minted_now = False
+            for row in rows:
+                slug = str(row["slug"])
+                if slug in closed_slugs:
+                    continue
+                state = str(row["state"])
+                if state in {"public", "ended"}:
+                    closed_slugs.add(slug)
+                    continue
+                if state != "mintable":
+                    continue
+                pending = [account for account in ready if best.get(account.id) != "succeeded"]
+                if not pending:
+                    break
+                _watching(extra=f"Минтим {slug}. Одна NFT, public не трогаем")
+                outcomes = context.map_accounts(
+                    lambda account, row=row: _mint_one(
+                        context,
+                        account,
+                        slug=str(row["slug"]),
+                        contract=str(row["contract"]),
+                        timeout_seconds=timeout_seconds,
+                        poll_seconds=poll_seconds,
+                        remain_s=max(30.0, deadline - time.monotonic()),
+                        max_mint_wei=max_mint_wei,
+                    ),
+                    accounts=tuple(pending),
                 )
-                if item["slug"] not in done_slugs
-            ]
-            if targets:
-                for target in targets:
-                    slug = str(target["slug"])
-                    _watching(extra=f"Минтим {slug}. Public не трогаем")
-                    outcomes = context.map_accounts(
-                        lambda account, target=target: _mint_one(
-                            context,
-                            account,
-                            slug=str(target["slug"]),
-                            contract=str(target["contract"]),
-                            timeout_seconds=timeout_seconds,
-                            poll_seconds=poll_seconds,
-                            remain_s=max(30.0, deadline - time.monotonic()),
-                            max_mint_wei=max_mint_wei,
-                        ),
-                        accounts=tuple(ready),
+                minted_now = True
+                for account, status in zip(pending, outcomes, strict=True):
+                    if status == "waiting":
+                        continue
+                    if best.get(account.id) != "succeeded":
+                        best[account.id] = status
+                if any(status == "succeeded" for status in outcomes):
+                    closed_slugs.add(slug)
+            if all(best.get(account.id) == "succeeded" for account in ready):
+                break
+            if closed_slugs.issuperset(slugs):
+                for account in ready:
+                    if best.get(account.id) == "succeeded":
+                        continue
+                    _finish_mint(
+                        context,
+                        account,
+                        status="failed",
+                        stage="completed",
+                        message="Клеймить было нечего",
+                        result_status="failed",
+                        data=_empty_mint("nothing_to_claim", "public"),
                     )
-                    for account, status in zip(ready, outcomes, strict=True):
-                        if status == "waiting":
-                            continue
-                        if best.get(account.id) != "succeeded":
-                            best[account.id] = status
-                    if any(status == "succeeded" for status in outcomes):
-                        done_slugs.add(slug)
+                    best[account.id] = "failed"
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            if not targets:
-                note = ""
-                try:
-                    note = active_stage_watch_message(
-                        find_drop(
-                            proxy=lead.secret("proxy"),
-                            timeout_seconds=timeout_seconds,
-                            slugs=slugs,
-                        )
-                    )
-                except DropRejected:
-                    note = ""
-                _watching(extra=note)
+            if not minted_now:
+                notes = [
+                    active_stage_watch_message(row.get("drop"))
+                    for row in rows
+                    if row.get("drop")
+                ]
+                _watching(extra=next((note for note in notes if note), ""))
                 _interruptible_sleep(context, min(float(poll_seconds), remaining))
     except CancelledError:
         for account in ready:
@@ -736,6 +755,7 @@ def _reject_message(code: str) -> str:
         "rpc_error": "RPC не принял транзакцию",
         "mint_too_expensive": "Цена WL выше потолка",
         "invalid_price": "Некорректный потолок цены минта",
+        "nothing_to_claim": "Клеймить было нечего",
     }
     return mapping.get(code, "Заявка не принята")
 

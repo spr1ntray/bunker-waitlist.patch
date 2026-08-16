@@ -136,6 +136,44 @@ def price_within_cap(price_wei: int | None, max_mint_wei: int) -> bool:
     return int(price_wei) <= max(0, int(max_mint_wei))
 
 
+def collection_gate(drop: dict[str, Any] | None, max_mint_wei: int) -> str:
+    """wait | mintable | public | ended"""
+    if not drop:
+        return "wait"
+    stage = classify_drop(drop)
+    if stage == STAGE_PUBLIC:
+        return "public"
+    if stage == STAGE_ENDED:
+        return "ended"
+    if stage != STAGE_ALLOWLIST:
+        return "wait"
+    if not price_within_cap(active_mint_price_wei(drop), max_mint_wei):
+        return "wait"
+    return "mintable"
+
+
+def inspect_slugs(
+    *,
+    proxy: str,
+    timeout_seconds: int,
+    max_mint_wei: int,
+    slugs: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for slug in slug_search_list(*slugs):
+        try:
+            drop = get_drop(slug=slug, proxy=proxy, timeout_seconds=timeout_seconds)
+        except DropRejected:
+            rows.append({"slug": slug, "state": "wait", "contract": "", "drop": None})
+            continue
+        state = collection_gate(drop, max_mint_wei)
+        contract = ""
+        if drop:
+            contract = str(_field(drop, "contract_address", "contractAddress") or "").strip().lower()
+        rows.append({"slug": slug, "state": state, "contract": contract, "drop": drop})
+    return rows
+
+
 def collect_mint_targets(
     *,
     proxy: str,
