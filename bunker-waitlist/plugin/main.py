@@ -380,7 +380,7 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
     def _watching(snapshot: dict[str, Any] | None = None) -> None:
         reason = str((snapshot or {}).get("reason") or "")
         if reason == "unpublished":
-            message = "Коллекция ещё не вышла — наблюдаем за минтом"
+            message = "Ждём официальную ссылку на коллекцию с thebunkerhood.com"
         else:
             message = "Наблюдаем за минтом. Ждём открытие WL"
         for account in ready:

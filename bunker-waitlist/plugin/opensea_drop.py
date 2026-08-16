@@ -11,9 +11,10 @@ from typing import Any
 
 import httpx
 
-from plugin.identity import OPENSEA_CHAIN, SEADROP, slug_search_list
+from plugin.identity import OPENSEA_CHAIN, SEADROP, locked_contract, locked_slug, slug_search_list
 from plugin.proxy import proxy_to_url
 from plugin.stage import STAGE_ALLOWLIST, STAGE_ENDED, STAGE_PUBLIC, STAGE_WAIT
+from plugin.verify import fetch_official_refs, trusted_drop
 
 OPENSEA_API = "https://api.opensea.io"
 MINT_PUBLIC_SELECTOR = "161ac21f"
@@ -104,10 +105,19 @@ def get_drop(*, slug: str, proxy: str, timeout_seconds: int) -> dict[str, Any] |
 
 
 def find_drop(*, proxy: str, timeout_seconds: int) -> dict[str, Any] | None:
-    for slug in slug_search_list():
+    refs = fetch_official_refs(proxy=proxy, timeout_seconds=timeout_seconds)
+    lookups: list[str] = []
+    pinned = locked_slug()
+    if pinned:
+        lookups.append(pinned)
+    lookups.extend(refs.slugs)
+    if refs.contracts or locked_contract():
+        lookups.extend(slug_search_list())
+    for slug in dict.fromkeys(lookups):
         found = get_drop(slug=slug, proxy=proxy, timeout_seconds=timeout_seconds)
-        if found is not None:
-            return found
+        trusted = trusted_drop(found, refs)
+        if trusted is not None:
+            return trusted
     return None
 
 
