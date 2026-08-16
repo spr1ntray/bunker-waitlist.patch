@@ -23,12 +23,29 @@ _ALLOW_TYPES = {
     "allowlist",
     "allow_list",
     "allowlist_sale",
-    "presale",
-    "pre_sale",
     "whitelist",
-    "wl",
 }
 _PUBLIC_TYPES = {"public_sale", "public", "publicsale"}
+_TEAM_HINTS = (
+    "team",
+    "staff",
+    "founder",
+    "internal",
+    "reserved",
+    "dev mint",
+    "devs",
+    "crew mint",
+    "admin",
+)
+_WL_HINTS = (
+    "allow",
+    "white",
+    "collab",
+    "holder",
+    "communit",
+    "guaranteed",
+    "fcfs",
+)
 
 _key_lock = threading.Lock()
 _cached_key: str | None = None
@@ -185,12 +202,28 @@ def collect_mint_targets(
 def _stage_kind(stage: dict[str, Any]) -> str:
     raw = str(_field(stage, "stage_type", "stageType") or "").strip().lower()
     label = str(_field(stage, "label") or "").strip().lower()
-    blob = f"{raw} {label}"
-    if raw in _PUBLIC_TYPES or "public" in blob:
+    if raw in _PUBLIC_TYPES or raw.startswith("public") or "public" in label:
         return "public"
-    if raw in _ALLOW_TYPES or any(token in blob for token in ("allow", "white", "presale", "pre-sale", "wl")):
+    if any(hint in label for hint in _TEAM_HINTS):
+        return "team"
+    if raw in _ALLOW_TYPES:
+        return "allowlist"
+    if any(hint in label for hint in _WL_HINTS):
         return "allowlist"
     return "unknown"
+
+
+def active_stage_watch_message(drop: dict[str, Any] | None) -> str:
+    if not drop:
+        return ""
+    active = _field(drop, "active_stage", "activeStage")
+    if not isinstance(active, dict):
+        return ""
+    kind = _stage_kind(active)
+    label = str(_field(active, "label") or "").strip() or "текущая стадия"
+    if kind == "team":
+        return f"Сейчас «{label}». Это не наш WL — ждём свою стадию"
+    return ""
 
 
 def classify_drop(drop: dict[str, Any] | None) -> str:

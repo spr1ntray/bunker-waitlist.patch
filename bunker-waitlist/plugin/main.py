@@ -14,7 +14,9 @@ from plugin.opensea_drop import (
     DropRejected,
     assert_safe_mint_tx,
     build_mint_tx,
+    active_stage_watch_message,
     collect_mint_targets,
+    find_drop,
     tx_value_wei,
 )
 from plugin.proxy import proxy_to_url
@@ -450,14 +452,27 @@ def _run_mint(context: HubContext) -> dict[str, Any]:
                         accounts=tuple(ready),
                     )
                     for account, status in zip(ready, outcomes, strict=True):
+                        if status == "waiting":
+                            continue
                         if best.get(account.id) != "succeeded":
                             best[account.id] = status
-                    done_slugs.add(slug)
+                    if any(status == "succeeded" for status in outcomes):
+                        done_slugs.add(slug)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             if not targets:
-                _watching()
+                note = ""
+                try:
+                    note = active_stage_watch_message(
+                        find_drop(
+                            proxy=lead.secret("proxy"),
+                            timeout_seconds=timeout_seconds,
+                        )
+                    )
+                except DropRejected:
+                    note = ""
+                _watching(extra=note)
                 _interruptible_sleep(context, min(float(poll_seconds), remaining))
     except CancelledError:
         for account in ready:
@@ -537,6 +552,15 @@ def _mint_one(
                 raise DropRejected("mint_too_expensive")
         except DropRejected as err:
             code = str(err)
+            if code in {"not_eligible", "drop_inactive"}:
+                context.account_state(
+                    account.id,
+                    status="running",
+                    stage="Наблюдает за минтом",
+                    progress=0.18,
+                    message="Эта стадия не для нас. Ждём свой WL",
+                )
+                return "waiting"
             _finish_mint(
                 context,
                 account,
