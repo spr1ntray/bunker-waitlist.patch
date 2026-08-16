@@ -24,9 +24,7 @@ from plugin.txsend import send_prepared_tx, token_id_from_receipt, wait_receipt
 PRIMARY_KIND = "account_snapshot"
 MINT_KIND = "account_mint"
 _REGISTER_KEYS = frozenset({"outcome", "class_name", "x_handle", "queued"})
-_MINT_KEYS = frozenset(
-    {"outcome", "stage", "minted", "listed", "token_id", "tx_hash"}
-)
+_MINT_KEYS = frozenset({"outcome", "stage", "minted", "token_id", "tx_hash"})
 
 
 class _RandomAccountPause:
@@ -59,8 +57,8 @@ class _RandomAccountPause:
 def run(context: HubContext) -> dict[str, Any]:
     if context.action_id == "register_waitlist":
         return _run_register(context)
-    if context.action_id in {"mint_and_dump", "mint_and_fixed", "mint_and_percent"}:
-        return _run_mint_and_list(context)
+    if context.action_id == "mint":
+        return _run_mint(context)
     raise ValueError("unsupported_action")
 
 
@@ -320,17 +318,10 @@ def _process_register(
         return "failed"
 
 
-def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
+def _run_mint(context: HubContext) -> dict[str, Any]:
     timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
     poll_seconds = _int_option(context.options, "poll_interval_seconds", 3, 2, 60)
-    watch_minutes = _int_option(context.options, "watch_minutes", 180, 5, 720)
-    list_mode = {
-        "mint_and_dump": "dump",
-        "mint_and_fixed": "fixed",
-        "mint_and_percent": "percent",
-    }[context.action_id]
-    profit_percent = _int_option(context.options, "profit_percent", 20, 0, 500) if list_mode == "percent" else 0
-    fixed_eth = str(context.options.get("list_price_eth", "0")) if list_mode == "fixed" else "0"
+    watch_minutes = _int_option(context.options, "watch_minutes", 720, 5, 10080)
     try:
         max_mint_wei = parse_eth_wei(
             _str_option(context.options, "max_mint_eth", "0"),
@@ -354,7 +345,6 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
             "accounts": len(context.accounts),
             "watch_minutes": watch_minutes,
             "poll_interval_seconds": poll_seconds,
-            "list_mode": list_mode,
             "max_mint_wei": max_mint_wei,
         },
     )
@@ -455,9 +445,6 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
                             timeout_seconds=timeout_seconds,
                             poll_seconds=poll_seconds,
                             remain_s=max(30.0, deadline - time.monotonic()),
-                            list_mode=list_mode,
-                            profit_percent=profit_percent,
-                            fixed_eth=fixed_eth,
                             max_mint_wei=max_mint_wei,
                         ),
                         accounts=tuple(ready),
@@ -514,9 +501,6 @@ def _mint_one(
     timeout_seconds: int,
     poll_seconds: int,
     remain_s: float,
-    list_mode: str,
-    profit_percent: int,
-    fixed_eth: str,
     max_mint_wei: int = 0,
 ) -> str:
     context.check_cancelled()
@@ -602,13 +586,12 @@ def _mint_one(
             account,
             status="succeeded",
             stage="completed",
-            message="Сминтили ончейн. Ордер на OpenSea — когда откроется продажа",
+            message="Сминтили ончейн",
             result_status="succeeded",
             data={
                 "outcome": "minted",
                 "stage": "mint",
                 "minted": True,
-                "listed": False,
                 "token_id": token_id,
                 "tx_hash": tx_hash,
             },
@@ -652,7 +635,6 @@ def _empty_mint(outcome: str, stage: str) -> dict[str, Any]:
         "outcome": outcome,
         "stage": stage,
         "minted": False,
-        "listed": False,
         "token_id": "",
         "tx_hash": "",
     }
