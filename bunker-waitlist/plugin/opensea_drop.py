@@ -19,33 +19,7 @@ _NATIVE = {"", "0x0000000000000000000000000000000000000000"}
 
 OPENSEA_API = "https://api.opensea.io"
 MINT_PUBLIC_SELECTOR = "161ac21f"
-_ALLOW_TYPES = {
-    "allowlist",
-    "allow_list",
-    "allowlist_sale",
-    "whitelist",
-}
 _PUBLIC_TYPES = {"public_sale", "public", "publicsale"}
-_TEAM_HINTS = (
-    "team",
-    "staff",
-    "founder",
-    "internal",
-    "reserved",
-    "dev mint",
-    "devs",
-    "crew mint",
-    "admin",
-)
-_WL_HINTS = (
-    "allow",
-    "white",
-    "collab",
-    "holder",
-    "communit",
-    "guaranteed",
-    "fcfs",
-)
 
 _key_lock = threading.Lock()
 _cached_key: str | None = None
@@ -205,13 +179,7 @@ def _stage_kind(stage: dict[str, Any]) -> str:
     label = str(_field(stage, "label") or "").strip().lower()
     if raw in _PUBLIC_TYPES or raw.startswith("public") or "public" in label:
         return "public"
-    if any(hint in label for hint in _TEAM_HINTS):
-        return "team"
-    if raw in _ALLOW_TYPES:
-        return "allowlist"
-    if any(hint in label for hint in _WL_HINTS):
-        return "allowlist"
-    return "unknown"
+    return "allowlist"
 
 
 def active_stage_watch_message(drop: dict[str, Any] | None) -> str:
@@ -222,8 +190,8 @@ def active_stage_watch_message(drop: dict[str, Any] | None) -> str:
         return ""
     kind = _stage_kind(active)
     label = str(_field(active, "label") or "").strip() or "текущая стадия"
-    if kind == "team":
-        return f"Сейчас «{label}». Это не наш WL — ждём свою стадию"
+    if kind == "public":
+        return f"Сейчас «{label}». Public не минтим"
     return ""
 
 
