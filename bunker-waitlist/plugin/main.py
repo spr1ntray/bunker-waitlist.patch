@@ -421,7 +421,7 @@ def _run_mint(context: HubContext) -> dict[str, Any]:
             context.account_state(
                 account.id,
                 status="running",
-                stage="Наблюдает за минтом",
+                stage="watch",
                 progress=0.18,
                 message=message,
             )
@@ -556,7 +556,7 @@ def _mint_one(
     context.account_state(
         account.id,
         status="running",
-        stage="Собирает минт",
+        stage="prepare",
         progress=0.40,
         message="Берём calldata WL-минта. Сайт OpenSea не открываем",
     )
@@ -588,7 +588,7 @@ def _mint_one(
                 context.account_state(
                     account.id,
                     status="running",
-                    stage="Наблюдает за минтом",
+                    stage="watch",
                     progress=0.18,
                     message="Эта стадия не для нас. Ждём свой WL",
                 )
@@ -608,7 +608,7 @@ def _mint_one(
         context.account_state(
             account.id,
             status="running",
-            stage="Минтит ончейн",
+            stage="mint",
             progress=0.70,
             message="Подписываем и шлём минт в сеть",
         )
