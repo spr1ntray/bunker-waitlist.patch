@@ -4,7 +4,7 @@
   "contract_version": "SH-SOFTWARE-0.6/4",
   "id": "io.sprintray.bunker-waitlist",
   "name": "BUNKER",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Waitlist BUNKER и ожидание WL-минта. Один кошелёк — один proxy.",
   "author": "sprintray",
   "presentation": {
@@ -440,12 +440,12 @@
       }
     },
     {
-      "id": "mint_and_list",
-      "name": "Ждать WL и минтить",
-      "description": "Сам ждёт allowlist на Robinhood, минтит только WL и сразу ставит ордер. Public не минтит.",
+      "id": "mint_and_dump",
+      "name": "WL-минт и демп",
+      "description": "Ждёт allowlist, минтит только WL и ставит ордер первым в стакане.",
       "risk": "mainnet_write",
       "account_mode": "one_or_more",
-      "confirmation_phrase": "BUNKER MINT AND LIST",
+      "confirmation_phrase": "BUNKER MINT",
       "permissions": {
         "secrets": ["evm_private_key", "proxy"]
       },
@@ -458,36 +458,12 @@
         "title": "WL-минт BUNKER",
         "primary_kind": "account_mint",
         "columns": [
-          {
-            "key": "outcome",
-            "title": "Итог",
-            "type": "string"
-          },
-          {
-            "key": "stage",
-            "title": "Стадия",
-            "type": "string"
-          },
-          {
-            "key": "minted",
-            "title": "Сминтил",
-            "type": "boolean"
-          },
-          {
-            "key": "listed",
-            "title": "В стакане",
-            "type": "boolean"
-          },
-          {
-            "key": "token_id",
-            "title": "Token",
-            "type": "string"
-          },
-          {
-            "key": "tx_hash",
-            "title": "Tx",
-            "type": "string"
-          }
+          {"key": "outcome", "title": "Итог", "type": "string"},
+          {"key": "stage", "title": "Стадия", "type": "string"},
+          {"key": "minted", "title": "Сминтил", "type": "boolean"},
+          {"key": "listed", "title": "В стакане", "type": "boolean"},
+          {"key": "token_id", "title": "Token", "type": "string"},
+          {"key": "tx_hash", "title": "Tx", "type": "string"}
         ]
       },
       "options": {
@@ -501,25 +477,17 @@
             "minimum": 1,
             "maximum": 20,
             "multipleOf": 1,
-            "x-ui": {
-              "group": "Выполнение",
-              "order": 0,
-              "unit": "аккаунтов"
-            }
+            "x-ui": {"group": "Выполнение", "order": 0, "unit": "аккаунтов"}
           },
           "watch_minutes": {
             "type": "integer",
             "title": "Ждать WL",
-            "description": "Сколько минут софт сам ждёт открытие allowlist. Можно остановить раньше.",
+            "description": "Сколько минут софт сам ждёт открытие allowlist.",
             "default": 180,
             "minimum": 5,
             "maximum": 720,
             "multipleOf": 1,
-            "x-ui": {
-              "group": "Ожидание",
-              "order": 10,
-              "unit": "мин"
-            }
+            "x-ui": {"group": "Ожидание", "order": 10, "unit": "мин"}
           },
           "poll_interval_seconds": {
             "type": "integer",
@@ -529,55 +497,7 @@
             "minimum": 2,
             "maximum": 60,
             "multipleOf": 1,
-            "x-ui": {
-              "group": "Ожидание",
-              "order": 20,
-              "unit": "сек"
-            }
-          },
-          "list_mode": {
-            "type": "string",
-            "title": "Стакан",
-            "description": "Как поставить ордер после минта. Демп — чуть ниже текущего floor.",
-            "enum": ["dump", "fixed", "percent"],
-            "default": "dump",
-            "x-ui": {
-              "group": "Стакан",
-              "order": 30,
-              "enum_labels": {
-                "dump": "Демп — первые в стакане",
-                "fixed": "Фикс в ETH",
-                "percent": "Процент от цены минта"
-              }
-            }
-          },
-          "list_price_eth": {
-            "type": "string",
-            "title": "Фикс цена",
-            "description": "Цена в ETH для режима «фикс». Для демпа не используется.",
-            "default": "0.01",
-            "maxLength": 24,
-            "x-ui": {
-              "group": "Цена",
-              "order": 40,
-              "advanced": true,
-              "placeholder": "0.01"
-            }
-          },
-          "profit_percent": {
-            "type": "integer",
-            "title": "Процент",
-            "description": "Надбавка к цене минта для режима «процент».",
-            "default": 20,
-            "minimum": 0,
-            "maximum": 500,
-            "multipleOf": 1,
-            "x-ui": {
-              "group": "Цена",
-              "order": 50,
-              "unit": "%",
-              "advanced": true
-            }
+            "x-ui": {"group": "Ожидание", "order": 20, "unit": "сек"}
           },
           "timeout_seconds": {
             "type": "integer",
@@ -587,12 +507,175 @@
             "minimum": 5,
             "maximum": 120,
             "multipleOf": 1,
-            "x-ui": {
-              "group": "Сеть",
-              "order": 60,
-              "unit": "сек",
-              "advanced": true
-            }
+            "x-ui": {"group": "Сеть", "order": 30, "unit": "сек", "advanced": true}
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "mint_and_fixed",
+      "name": "WL-минт и фикс",
+      "description": "Ждёт allowlist, минтит только WL и ставит ордер по фиксированной цене.",
+      "risk": "mainnet_write",
+      "account_mode": "one_or_more",
+      "confirmation_phrase": "BUNKER MINT",
+      "permissions": {
+        "secrets": ["evm_private_key", "proxy"]
+      },
+      "resources": {
+        "account": ["private_key", "proxy"],
+        "settings": []
+      },
+      "output": {
+        "mode": "account_table",
+        "title": "WL-минт BUNKER",
+        "primary_kind": "account_mint",
+        "columns": [
+          {"key": "outcome", "title": "Итог", "type": "string"},
+          {"key": "stage", "title": "Стадия", "type": "string"},
+          {"key": "minted", "title": "Сминтил", "type": "boolean"},
+          {"key": "listed", "title": "В стакане", "type": "boolean"},
+          {"key": "token_id", "title": "Token", "type": "string"},
+          {"key": "tx_hash", "title": "Tx", "type": "string"}
+        ]
+      },
+      "options": {
+        "type": "object",
+        "properties": {
+          "account_concurrency": {
+            "type": "integer",
+            "title": "Параллельные аккаунты",
+            "description": "Сколько кошельков минтить сразу, когда WL откроется.",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 20,
+            "multipleOf": 1,
+            "x-ui": {"group": "Выполнение", "order": 0, "unit": "аккаунтов"}
+          },
+          "watch_minutes": {
+            "type": "integer",
+            "title": "Ждать WL",
+            "description": "Сколько минут софт сам ждёт открытие allowlist.",
+            "default": 180,
+            "minimum": 5,
+            "maximum": 720,
+            "multipleOf": 1,
+            "x-ui": {"group": "Ожидание", "order": 10, "unit": "мин"}
+          },
+          "poll_interval_seconds": {
+            "type": "integer",
+            "title": "Интервал опроса",
+            "description": "Как часто проверять, открылся ли WL. Безопасное значение — 3 секунды.",
+            "default": 3,
+            "minimum": 2,
+            "maximum": 60,
+            "multipleOf": 1,
+            "x-ui": {"group": "Ожидание", "order": 20, "unit": "сек"}
+          },
+          "list_price_eth": {
+            "type": "string",
+            "title": "Цена в ETH",
+            "description": "Ордер встанет ровно по этой цене.",
+            "default": "0.01",
+            "maxLength": 24,
+            "x-ui": {"group": "Стакан", "order": 30, "placeholder": "0.01"}
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "title": "Таймаут запроса",
+            "description": "Сетевой таймаут proxy, RPC и OpenSea. Безопасное значение — 30.",
+            "default": 30,
+            "minimum": 5,
+            "maximum": 120,
+            "multipleOf": 1,
+            "x-ui": {"group": "Сеть", "order": 40, "unit": "сек", "advanced": true}
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "mint_and_percent",
+      "name": "WL-минт и процент",
+      "description": "Ждёт allowlist, минтит только WL и ставит ордер с надбавкой к цене минта.",
+      "risk": "mainnet_write",
+      "account_mode": "one_or_more",
+      "confirmation_phrase": "BUNKER MINT",
+      "permissions": {
+        "secrets": ["evm_private_key", "proxy"]
+      },
+      "resources": {
+        "account": ["private_key", "proxy"],
+        "settings": []
+      },
+      "output": {
+        "mode": "account_table",
+        "title": "WL-минт BUNKER",
+        "primary_kind": "account_mint",
+        "columns": [
+          {"key": "outcome", "title": "Итог", "type": "string"},
+          {"key": "stage", "title": "Стадия", "type": "string"},
+          {"key": "minted", "title": "Сминтил", "type": "boolean"},
+          {"key": "listed", "title": "В стакане", "type": "boolean"},
+          {"key": "token_id", "title": "Token", "type": "string"},
+          {"key": "tx_hash", "title": "Tx", "type": "string"}
+        ]
+      },
+      "options": {
+        "type": "object",
+        "properties": {
+          "account_concurrency": {
+            "type": "integer",
+            "title": "Параллельные аккаунты",
+            "description": "Сколько кошельков минтить сразу, когда WL откроется.",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 20,
+            "multipleOf": 1,
+            "x-ui": {"group": "Выполнение", "order": 0, "unit": "аккаунтов"}
+          },
+          "watch_minutes": {
+            "type": "integer",
+            "title": "Ждать WL",
+            "description": "Сколько минут софт сам ждёт открытие allowlist.",
+            "default": 180,
+            "minimum": 5,
+            "maximum": 720,
+            "multipleOf": 1,
+            "x-ui": {"group": "Ожидание", "order": 10, "unit": "мин"}
+          },
+          "poll_interval_seconds": {
+            "type": "integer",
+            "title": "Интервал опроса",
+            "description": "Как часто проверять, открылся ли WL. Безопасное значение — 3 секунды.",
+            "default": 3,
+            "minimum": 2,
+            "maximum": 60,
+            "multipleOf": 1,
+            "x-ui": {"group": "Ожидание", "order": 20, "unit": "сек"}
+          },
+          "profit_percent": {
+            "type": "integer",
+            "title": "Надбавка",
+            "description": "На сколько процентов дороже цены минта поставить ордер.",
+            "default": 20,
+            "minimum": 0,
+            "maximum": 500,
+            "multipleOf": 1,
+            "x-ui": {"group": "Стакан", "order": 30, "unit": "%"}
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "title": "Таймаут запроса",
+            "description": "Сетевой таймаут proxy, RPC и OpenSea. Безопасное значение — 30.",
+            "default": 30,
+            "minimum": 5,
+            "maximum": 120,
+            "multipleOf": 1,
+            "x-ui": {"group": "Сеть", "order": 40, "unit": "сек", "advanced": true}
           }
         },
         "required": [],

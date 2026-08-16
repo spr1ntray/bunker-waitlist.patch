@@ -68,7 +68,7 @@ def run(context: HubContext) -> dict[str, Any]:
         return _run_inspect(context)
     if context.action_id == "watch_collection":
         return _run_watch(context)
-    if context.action_id == "mint_and_list":
+    if context.action_id in {"mint_and_dump", "mint_and_fixed", "mint_and_percent"}:
         return _run_mint_and_list(context)
     raise ValueError("unsupported_action")
 
@@ -670,9 +670,13 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
     timeout_seconds = _int_option(context.options, "timeout_seconds", 30, 5, 120)
     poll_seconds = _int_option(context.options, "poll_interval_seconds", 3, 2, 60)
     watch_minutes = _int_option(context.options, "watch_minutes", 180, 5, 720)
-    list_mode = _str_option(context.options, "list_mode", "dump")
-    profit_percent = _int_option(context.options, "profit_percent", 20, 0, 500)
-    fixed_eth = str(context.options.get("list_price_eth", "0"))
+    list_mode = {
+        "mint_and_dump": "dump",
+        "mint_and_fixed": "fixed",
+        "mint_and_percent": "percent",
+    }[context.action_id]
+    profit_percent = _int_option(context.options, "profit_percent", 20, 0, 500) if list_mode == "percent" else 0
+    fixed_eth = str(context.options.get("list_price_eth", "0")) if list_mode == "fixed" else "0"
 
     counters = {
         "total": len(context.accounts),
