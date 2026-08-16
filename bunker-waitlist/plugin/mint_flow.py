@@ -6,6 +6,7 @@ from typing import Any
 from plugin.discover import DiscoveredCollection, discover_collection
 from plugin.hunter import hunt_allowlist
 from plugin.identity import locked_contract, locked_slug
+from plugin.opensea_drop import DropRejected, read_drop_snapshot
 from plugin.opensea_sign import fetch_signed_mint
 from plugin.stage import STAGE_ALLOWLIST, STAGE_WAIT, classify_stage
 
@@ -71,12 +72,27 @@ def wait_for_allowlist(
     on_wait: Callable[[dict[str, Any]], None] | None = None,
     **reader_hooks: Any,
 ) -> dict[str, Any]:
-    reader = make_stage_reader(
-        proxy=proxy,
-        timeout_seconds=timeout_seconds,
-        wallet=wallet,
-        **reader_hooks,
-    )
+    if reader_hooks:
+        reader = make_stage_reader(
+            proxy=proxy,
+            timeout_seconds=timeout_seconds,
+            wallet=wallet,
+            **reader_hooks,
+        )
+    else:
+
+        def reader() -> dict[str, Any]:
+            try:
+                return read_drop_snapshot(proxy=proxy, timeout_seconds=timeout_seconds)
+            except DropRejected:
+                return {
+                    "stage": STAGE_WAIT,
+                    "ready": False,
+                    "reason": "unpublished",
+                    "contract": "",
+                    "slug": "",
+                }
+
     return hunt_allowlist(
         reader=reader,
         deadline_s=deadline_s,

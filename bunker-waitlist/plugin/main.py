@@ -10,8 +10,11 @@ from soft_hub.sdk import CancelledError, HubAccount, HubContext
 from plugin.catalog import pick_comment, pick_handle, resolve_class
 from plugin.client import ApiRejected, SafeRequestError, normalize_wallet, submit_wallet
 from plugin.hunter import HuntTimeout
-from plugin.mint_flow import wait_for_allowlist, wait_for_signed_payload
+from plugin.mint_flow import wait_for_allowlist
+from plugin.opensea_drop import DropRejected, assert_safe_mint_tx, build_mint_tx
 from plugin.proxy import proxy_to_url
+from plugin.rpc import RpcError
+from plugin.txsend import send_prepared_tx, token_id_from_receipt, wait_receipt
 
 PRIMARY_KIND = "account_snapshot"
 MINT_KIND = "account_mint"
@@ -479,33 +482,45 @@ def _mint_one(
     fixed_eth: str,
 ) -> str:
     context.check_cancelled()
+    wallet = normalize_wallet(account.evm_address)
+    proxy = account.secret("proxy")
     context.account_state(
         account.id,
         status="running",
-        stage="automation",
+        stage="Собирает минт",
         progress=0.40,
-        message="Ждём подпись OpenSea на этот кошелёк",
+        message="Берём calldata WL-минта. Сайт OpenSea не открываем",
     )
     try:
-        signed = wait_for_signed_payload(
-            slug=slug,
-            contract=contract,
-            wallet=normalize_wallet(account.evm_address),
-            proxy=account.secret("proxy"),
-            timeout_seconds=timeout_seconds,
-            deadline_s=remain_s,
-            poll_s=poll_seconds,
-            check_cancelled=context.check_cancelled,
-        )
-        if signed is None:
+        if not slug:
             _finish_mint(
                 context,
                 account,
                 status="failed",
                 stage="failed",
-                message="Подпись WL от OpenSea не пришла — минтить public не будем",
+                message="Коллекция ещё без slug — минтить нечего",
                 result_status="failed",
-                data=_empty_mint("no_signature", "allowlist"),
+                data=_empty_mint("no_slug", "allowlist"),
+            )
+            return "failed"
+        try:
+            prepared = build_mint_tx(
+                slug=slug,
+                wallet=wallet,
+                proxy=proxy,
+                timeout_seconds=timeout_seconds,
+            )
+            assert_safe_mint_tx(prepared, contract=contract)
+        except DropRejected as err:
+            code = str(err)
+            _finish_mint(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message=_reject_message(code),
+                result_status="failed",
+                data=_empty_mint(code, "allowlist"),
             )
             return "failed"
 
@@ -513,19 +528,62 @@ def _mint_one(
         context.account_state(
             account.id,
             status="running",
-            stage="submitting",
+            stage="Минтит ончейн",
             progress=0.70,
-            message="Минтим по WL и ставим ордер",
+            message="Подписываем и шлём минт в сеть",
         )
-        # Payload shape is filled from a live HAR. Do not send a blind public mint.
+        tx_hash = send_prepared_tx(
+            private_key=account.secret("evm_private_key"),
+            to=prepared["to"],
+            data=prepared["data"],
+            value=prepared["value"],
+            proxy=proxy,
+            timeout_seconds=timeout_seconds,
+        )
+        receipt = wait_receipt(
+            tx_hash=tx_hash,
+            proxy=proxy,
+            timeout_seconds=timeout_seconds,
+        )
+        if str(receipt.get("status") or "").lower() in {"0x0", "0"}:
+            _finish_mint(
+                context,
+                account,
+                status="failed",
+                stage="failed",
+                message="Минт ревертнулся в сети",
+                result_status="failed",
+                data={**_empty_mint("reverted", "mint"), "tx_hash": tx_hash},
+            )
+            return "failed"
+        token_id = token_id_from_receipt(receipt)
+        _finish_mint(
+            context,
+            account,
+            status="succeeded",
+            stage="completed",
+            message="Сминтили ончейн. Ордер на OpenSea — когда откроется продажа",
+            result_status="succeeded",
+            data={
+                "outcome": "minted",
+                "stage": "mint",
+                "minted": True,
+                "listed": False,
+                "token_id": token_id,
+                "tx_hash": tx_hash,
+            },
+            progress=1.0,
+        )
+        return "succeeded"
+    except RpcError:
         _finish_mint(
             context,
             account,
             status="failed",
             stage="failed",
-            message="Контракт найден, но формат mintSigned ещё не закреплён. Нужен HAR",
+            message="Сеть не приняла транзакцию",
             result_status="failed",
-            data=_empty_mint("mint_payload_unknown", "allowlist"),
+            data=_empty_mint("rpc_error", "mint"),
         )
         return "failed"
     except CancelledError:
@@ -605,7 +663,18 @@ def _reject_message(code: str) -> str:
         "hunt_timeout": "Окно WL не открылось до конца ожидания",
         "no_signature": "Нет подписи OpenSea на этот кошелёк",
         "mint_payload_unknown": "Формат минта ещё не закреплён",
-        "wrong_chain": "RPC вернул не Robinhood Chain",
+        "api_key": "OpenSea не выдала ключ API",
+        "drop_request": "Не удалось прочитать drop на OpenSea",
+        "mint_request": "OpenSea не собрала транзакцию минта",
+        "drop_inactive": "Drop ещё не активен",
+        "not_eligible": "Кошелёк не в allowlist этой стадии",
+        "bad_target": "OpenSea вернула чужой контракт — не шлём",
+        "bad_calldata": "OpenSea вернула пустой calldata",
+        "public_calldata": "Это public-минт. Не отправляем",
+        "wrong_chain": "Это не Robinhood Chain",
+        "no_slug": "Нет slug коллекции",
+        "reverted": "Минт ревертнулся в сети",
+        "rpc_error": "RPC не принял транзакцию",
     }
     return mapping.get(code, "Заявка не принята")
 
