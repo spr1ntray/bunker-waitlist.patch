@@ -8,7 +8,7 @@ from typing import Any
 from soft_hub.sdk import CancelledError, HubAccount, HubContext
 
 from plugin.catalog import pick_comment, pick_handle, resolve_class
-from plugin.client import ApiRejected, SafeRequestError, fetch_site, normalize_wallet, submit_wallet
+from plugin.client import ApiRejected, SafeRequestError, normalize_wallet, submit_wallet
 from plugin.hunter import HuntTimeout
 from plugin.mint_flow import wait_for_allowlist, wait_for_signed_payload
 from plugin.proxy import proxy_to_url
@@ -364,22 +364,6 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
                 status="blocked",
                 stage="preflight",
                 message="Нет приватника или proxy",
-                result_status="blocked",
-                data=_empty_mint("blocked", "preflight"),
-            )
-            counters["blocked"] += 1
-            continue
-        try:
-            site = fetch_site(proxy=proxy, timeout_seconds=timeout_seconds)
-            if not site.ok:
-                raise SafeRequestError("site_down")
-        except (SafeRequestError, ApiRejected):
-            _finish_mint(
-                context,
-                account,
-                status="blocked",
-                stage="preflight",
-                message="Proxy не открывает сайт",
                 result_status="blocked",
                 data=_empty_mint("blocked", "preflight"),
             )
