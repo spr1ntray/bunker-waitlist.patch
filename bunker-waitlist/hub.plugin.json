@@ -4,7 +4,7 @@
   "contract_version": "SH-SOFTWARE-0.6/4",
   "id": "io.sprintray.bunker-waitlist",
   "name": "BUNKER",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "Waitlist BUNKER и WL-минт. Один кошелёк — один proxy.",
   "author": "sprintray",
   "presentation": {
@@ -302,6 +302,18 @@
               "unit": "сек"
             }
           },
+          "max_mint_eth": {
+            "type": "string",
+            "title": "Потолок минта",
+            "description": "0 — только бесплатный WL, платите газ, софт берёт все подходящие slug. Больше нуля — максимальная цена WL в ETH. Дороже пропускаем.",
+            "default": "0",
+            "maxLength": 24,
+            "x-ui": {
+              "group": "Минт",
+              "order": 25,
+              "placeholder": "0"
+            }
+          },
           "timeout_seconds": {
             "type": "integer",
             "title": "Таймаут запроса",
@@ -422,6 +434,18 @@
               "group": "Ожидание",
               "order": 20,
               "unit": "сек"
+            }
+          },
+          "max_mint_eth": {
+            "type": "string",
+            "title": "Потолок минта",
+            "description": "0 — только бесплатный WL, платите газ, софт берёт все подходящие slug. Больше нуля — максимальная цена WL в ETH. Дороже пропускаем.",
+            "default": "0",
+            "maxLength": 24,
+            "x-ui": {
+              "group": "Минт",
+              "order": 25,
+              "placeholder": "0"
             }
           },
           "list_price_eth": {
@@ -556,6 +580,18 @@
               "group": "Ожидание",
               "order": 20,
               "unit": "сек"
+            }
+          },
+          "max_mint_eth": {
+            "type": "string",
+            "title": "Потолок минта",
+            "description": "0 — только бесплатный WL, платите газ, софт берёт все подходящие slug. Больше нуля — максимальная цена WL в ETH. Дороже пропускаем.",
+            "default": "0",
+            "maxLength": 24,
+            "x-ui": {
+              "group": "Минт",
+              "order": 25,
+              "placeholder": "0"
             }
           },
           "profit_percent": {

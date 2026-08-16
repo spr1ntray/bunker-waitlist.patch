@@ -26,7 +26,7 @@ def listing_price_wei(
     return floor - cut
 
 
-def _eth_to_wei(raw: str) -> int:
+def parse_eth_wei(raw: str, *, allow_zero: bool = False) -> int:
     text = (raw or "").strip()
     if not text:
         raise ValueError("invalid_price")
@@ -34,6 +34,14 @@ def _eth_to_wei(raw: str) -> int:
         value = Decimal(text)
     except InvalidOperation as exc:
         raise ValueError("invalid_price") from exc
-    if value <= 0:
+    if value < 0:
+        raise ValueError("invalid_price")
+    if value == 0:
+        if allow_zero:
+            return 0
         raise ValueError("invalid_price")
     return int(value * Decimal(10**18))
+
+
+def _eth_to_wei(raw: str) -> int:
+    return parse_eth_wei(raw, allow_zero=False)

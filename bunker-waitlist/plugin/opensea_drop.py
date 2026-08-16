@@ -11,10 +11,11 @@ from typing import Any
 
 import httpx
 
-from plugin.identity import OPENSEA_CHAIN, SEADROP, locked_contract, locked_slug, slug_search_list
+from plugin.identity import OPENSEA_CHAIN, SEADROP, slug_search_list
 from plugin.proxy import proxy_to_url
 from plugin.stage import STAGE_ALLOWLIST, STAGE_ENDED, STAGE_PUBLIC, STAGE_WAIT
-from plugin.verify import fetch_official_refs, trusted_drop
+
+_NATIVE = {"", "0x0000000000000000000000000000000000000000"}
 
 OPENSEA_API = "https://api.opensea.io"
 MINT_PUBLIC_SELECTOR = "161ac21f"
@@ -104,21 +105,81 @@ def get_drop(*, slug: str, proxy: str, timeout_seconds: int) -> dict[str, Any] |
     return data if isinstance(data, dict) else None
 
 
+def _chain_ok(drop: dict[str, Any]) -> bool:
+    chain = str(_field(drop, "chain") or "").strip().lower()
+    return not chain or chain in {OPENSEA_CHAIN, "robinhood_chain", "hood"}
+
+
 def find_drop(*, proxy: str, timeout_seconds: int) -> dict[str, Any] | None:
-    refs = fetch_official_refs(proxy=proxy, timeout_seconds=timeout_seconds)
-    lookups: list[str] = []
-    pinned = locked_slug()
-    if pinned:
-        lookups.append(pinned)
-    lookups.extend(refs.slugs)
-    if refs.contracts or locked_contract():
-        lookups.extend(slug_search_list())
-    for slug in dict.fromkeys(lookups):
-        found = get_drop(slug=slug, proxy=proxy, timeout_seconds=timeout_seconds)
-        trusted = trusted_drop(found, refs)
-        if trusted is not None:
-            return trusted
+    for slug in slug_search_list():
+        try:
+            found = get_drop(slug=slug, proxy=proxy, timeout_seconds=timeout_seconds)
+        except DropRejected:
+            continue
+        if found is not None and _chain_ok(found):
+            return found
     return None
+
+
+def active_mint_price_wei(drop: dict[str, Any] | None) -> int | None:
+    if not drop:
+        return None
+    stage = _field(drop, "active_stage", "activeStage")
+    if not isinstance(stage, dict):
+        return None
+    currency = str(_field(stage, "price_currency_address", "priceCurrencyAddress") or "").strip().lower()
+    if currency not in _NATIVE:
+        return None
+    raw = str(_field(stage, "price") or "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(raw, 0) if raw.startswith("0x") else int(raw)
+    except ValueError:
+        return None
+
+
+def price_within_cap(price_wei: int | None, max_mint_wei: int) -> bool:
+    if price_wei is None:
+        return False
+    return int(price_wei) <= max(0, int(max_mint_wei))
+
+
+def collect_mint_targets(
+    *,
+    proxy: str,
+    timeout_seconds: int,
+    max_mint_wei: int,
+) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    for slug in slug_search_list():
+        try:
+            drop = get_drop(slug=slug, proxy=proxy, timeout_seconds=timeout_seconds)
+        except DropRejected:
+            continue
+        if not drop or not _chain_ok(drop):
+            continue
+        if classify_drop(drop) != STAGE_ALLOWLIST:
+            continue
+        price = active_mint_price_wei(drop)
+        if not price_within_cap(price, max_mint_wei):
+            continue
+        contract = str(_field(drop, "contract_address", "contractAddress") or "").strip().lower()
+        name = str(_field(drop, "collection_slug", "collectionSlug") or slug).strip()
+        if not contract:
+            continue
+        targets.append(
+            {
+                "stage": STAGE_ALLOWLIST,
+                "ready": True,
+                "reason": STAGE_ALLOWLIST,
+                "contract": contract,
+                "slug": name,
+                "price_wei": int(price or 0),
+                "chain": str(_field(drop, "chain") or ""),
+            }
+        )
+    return targets
 
 
 def _stage_kind(stage: dict[str, Any]) -> str:
@@ -228,3 +289,10 @@ def assert_safe_mint_tx(tx: dict[str, str], *, contract: str) -> None:
     chain = str(tx.get("chain") or "").strip().lower()
     if chain and chain not in {OPENSEA_CHAIN, "robinhood_chain", "hood", ""}:
         raise DropRejected("wrong_chain")
+
+
+def tx_value_wei(tx: dict[str, str]) -> int:
+    raw = str(tx.get("value") or "0").strip()
+    if not raw:
+        return 0
+    return int(raw, 16) if raw.startswith("0x") else int(raw)

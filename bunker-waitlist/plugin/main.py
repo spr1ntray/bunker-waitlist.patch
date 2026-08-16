@@ -9,9 +9,14 @@ from soft_hub.sdk import CancelledError, HubAccount, HubContext
 
 from plugin.catalog import pick_comment, pick_handle, resolve_class
 from plugin.client import ApiRejected, SafeRequestError, normalize_wallet, submit_wallet
-from plugin.hunter import HuntTimeout
-from plugin.mint_flow import wait_for_allowlist
-from plugin.opensea_drop import DropRejected, assert_safe_mint_tx, build_mint_tx
+from plugin.listing import parse_eth_wei
+from plugin.opensea_drop import (
+    DropRejected,
+    assert_safe_mint_tx,
+    build_mint_tx,
+    collect_mint_targets,
+    tx_value_wei,
+)
 from plugin.proxy import proxy_to_url
 from plugin.rpc import RpcError
 from plugin.txsend import send_prepared_tx, token_id_from_receipt, wait_receipt
@@ -326,6 +331,13 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
     }[context.action_id]
     profit_percent = _int_option(context.options, "profit_percent", 20, 0, 500) if list_mode == "percent" else 0
     fixed_eth = str(context.options.get("list_price_eth", "0")) if list_mode == "fixed" else "0"
+    try:
+        max_mint_wei = parse_eth_wei(
+            _str_option(context.options, "max_mint_eth", "0"),
+            allow_zero=True,
+        )
+    except ValueError:
+        max_mint_wei = -1
 
     counters = {
         "total": len(context.accounts),
@@ -343,8 +355,27 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
             "watch_minutes": watch_minutes,
             "poll_interval_seconds": poll_seconds,
             "list_mode": list_mode,
+            "max_mint_wei": max_mint_wei,
         },
     )
+    if max_mint_wei < 0:
+        for account in context.accounts:
+            _finish_mint(
+                context,
+                account,
+                status="blocked",
+                stage="preflight",
+                message="Некорректный потолок цены минта",
+                result_status="blocked",
+                data=_empty_mint("invalid_price", "preflight"),
+            )
+        return {
+            "total": len(context.accounts),
+            "succeeded": 0,
+            "failed": 0,
+            "blocked": len(context.accounts),
+            "cancelled": 0,
+        }
 
     for account in context.accounts:
         context.check_cancelled()
@@ -377,12 +408,13 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
     if not ready:
         return counters
 
-    def _watching(snapshot: dict[str, Any] | None = None) -> None:
-        reason = str((snapshot or {}).get("reason") or "")
-        if reason == "unpublished":
-            message = "Ждём официальную ссылку на коллекцию с thebunkerhood.com"
+    def _watching(*, extra: str = "") -> None:
+        if max_mint_wei == 0:
+            message = "Пылесосим бесплатный WL по slug. Public не трогаем"
         else:
-            message = "Наблюдаем за минтом. Ждём открытие WL"
+            message = f"Ждём WL не дороже {context.options.get('max_mint_eth', '0')} ETH"
+        if extra:
+            message = extra
         for account in ready:
             context.account_state(
                 account.id,
@@ -394,47 +426,56 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
 
     lead = ready[0]
     deadline_s = watch_minutes * 60
+    deadline = time.monotonic() + deadline_s
+    done_slugs: set[str] = set()
+    best: dict[str, str] = {}
     _watching()
     try:
-        hunted = wait_for_allowlist(
-            proxy=lead.secret("proxy"),
-            timeout_seconds=timeout_seconds,
-            wallet=normalize_wallet(lead.evm_address),
-            deadline_s=deadline_s,
-            poll_s=poll_seconds,
-            check_cancelled=context.check_cancelled,
-            on_wait=_watching,
-        )
-    except HuntTimeout:
-        for account in ready:
-            _finish_mint(
-                context,
-                account,
-                status="failed",
-                stage="failed",
-                message="Окно WL не открылось до конца ожидания",
-                result_status="failed",
-                data=_empty_mint("timeout", "wait"),
-            )
-            counters["failed"] += 1
-        return counters
-    except ValueError as err:
-        code = str(err)
-        message = _reject_message(code)
-        for account in ready:
-            _finish_mint(
-                context,
-                account,
-                status="blocked",
-                stage="blocked",
-                message=message,
-                result_status="blocked",
-                data=_empty_mint(code, "public" if code == "public_stage" else "ended"),
-            )
-            counters["blocked"] += 1
-        return counters
+        while True:
+            context.check_cancelled()
+            targets = [
+                item
+                for item in collect_mint_targets(
+                    proxy=lead.secret("proxy"),
+                    timeout_seconds=timeout_seconds,
+                    max_mint_wei=max_mint_wei,
+                )
+                if item["slug"] not in done_slugs
+            ]
+            if targets:
+                for target in targets:
+                    slug = str(target["slug"])
+                    _watching(extra=f"Минтим {slug}. Public не трогаем")
+                    outcomes = context.map_accounts(
+                        lambda account, target=target: _mint_one(
+                            context,
+                            account,
+                            slug=str(target["slug"]),
+                            contract=str(target["contract"]),
+                            timeout_seconds=timeout_seconds,
+                            poll_seconds=poll_seconds,
+                            remain_s=max(30.0, deadline - time.monotonic()),
+                            list_mode=list_mode,
+                            profit_percent=profit_percent,
+                            fixed_eth=fixed_eth,
+                            max_mint_wei=max_mint_wei,
+                        ),
+                        accounts=tuple(ready),
+                    )
+                    for account, status in zip(ready, outcomes, strict=True):
+                        if best.get(account.id) != "succeeded":
+                            best[account.id] = status
+                    done_slugs.add(slug)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if not targets:
+                _watching()
+                _interruptible_sleep(context, min(float(poll_seconds), remaining))
     except CancelledError:
         for account in ready:
+            if account.id in best:
+                continue
             context.account_state(
                 account.id,
                 status="cancelled",
@@ -442,29 +483,25 @@ def _run_mint_and_list(context: HubContext) -> dict[str, Any]:
                 message="Ожидание минта остановлено",
             )
             counters["cancelled"] += 1
+        for status in best.values():
+            counters[status] = counters.get(status, 0) + 1
         return counters
 
-    slug = str(hunted.get("slug") or "")
-    contract = str(hunted.get("contract") or "")
-    remain = max(30.0, float(deadline_s) / 3)
-
-    def worker(account: HubAccount) -> str:
-        return _mint_one(
+    for account in ready:
+        status = best.get(account.id)
+        if status:
+            counters[status] = counters.get(status, 0) + 1
+            continue
+        _finish_mint(
             context,
             account,
-            slug=slug,
-            contract=contract,
-            timeout_seconds=timeout_seconds,
-            poll_seconds=poll_seconds,
-            remain_s=remain,
-            list_mode=list_mode,
-            profit_percent=profit_percent,
-            fixed_eth=fixed_eth,
+            status="failed",
+            stage="failed",
+            message="Подходящий WL по цене не открылся",
+            result_status="failed",
+            data=_empty_mint("timeout", "wait"),
         )
-
-    outcomes = context.map_accounts(worker, accounts=tuple(ready))
-    for status in outcomes:
-        counters[status] = counters.get(status, 0) + 1
+        counters["failed"] += 1
     return counters
 
 
@@ -480,6 +517,7 @@ def _mint_one(
     list_mode: str,
     profit_percent: int,
     fixed_eth: str,
+    max_mint_wei: int = 0,
 ) -> str:
     context.check_cancelled()
     wallet = normalize_wallet(account.evm_address)
@@ -511,6 +549,8 @@ def _mint_one(
                 timeout_seconds=timeout_seconds,
             )
             assert_safe_mint_tx(prepared, contract=contract)
+            if tx_value_wei(prepared) > max_mint_wei:
+                raise DropRejected("mint_too_expensive")
         except DropRejected as err:
             code = str(err)
             _finish_mint(
@@ -675,6 +715,8 @@ def _reject_message(code: str) -> str:
         "no_slug": "Нет slug коллекции",
         "reverted": "Минт ревертнулся в сети",
         "rpc_error": "RPC не принял транзакцию",
+        "mint_too_expensive": "Цена WL выше потолка",
+        "invalid_price": "Некорректный потолок цены минта",
     }
     return mapping.get(code, "Заявка не принята")
 
