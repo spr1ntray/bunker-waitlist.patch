@@ -4,7 +4,7 @@
   "contract_version": "SH-SOFTWARE-0.6/4",
   "id": "io.sprintray.bunker-waitlist",
   "name": "BUNKER",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "Waitlist BUNKER и WL-минт. Один кошелёк — один proxy.",
   "author": "sprintray",
   "presentation": {
@@ -297,8 +297,8 @@
           "poll_interval_seconds": {
             "type": "integer",
             "title": "Интервал опроса",
-            "description": "Как часто проверять, открылся ли WL. Безопасное значение — 3 секунды.",
-            "default": 3,
+            "description": "Как часто проверять, открылся ли WL. Меньше 6 сек ключ OpenSea режет.",
+            "default": 8,
             "minimum": 2,
             "maximum": 60,
             "multipleOf": 1,
